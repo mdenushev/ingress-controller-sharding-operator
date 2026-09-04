@@ -20,6 +20,22 @@ A separate deletionTerminationPeriod is used specifically when a sharded object 
 
 Since the nginx config update operation inside the ingress controller can be resource-intensive (a complete re-creation of the configuration is required at the moment), a speed limit has been introduced for updating objects in the cluster
 
+The reconciliation lifecycle (phases, resharding timeline, rate limiting) is documented in [docs/lifecycle.md](docs/lifecycle.md)
+
+## Observability
+
+The parent objects expose their lifecycle state:
+
+- `status.phase`: `Pending` / `Provisioning` / `Resharding` / `Ready` / `Terminating` (shown by `kubectl get shardedingress`)
+- `status.conditions`: `Ready` and `Resharding` with reasons, plus `status.observedGeneration`
+- kube events on the parent for every step: `ChildCreated`, `ChildUpdated`, `ChildDeleted`, `TmpChildCreated`, `ReshardingStarted`, `MarkedForDeletion`, `DeletionScheduled`, `ApplyScheduled`, `FinalizerDraining`, `FinalizerRemoved` (visible in `kubectl describe`)
+
+## Testing
+
+- `make test` — unit tests (runs in CI on every PR)
+- `make test-e2e` — e2e suite against the cluster from the current kubeconfig; the operator must be deployed with `test/e2e/manifests/operator.yaml` first. CI runs it on a kind cluster with an image built from the PR, so it also works in forks
+- every non-main branch push builds a test image at `ghcr.io/<owner>/ingress-controller-sharding-operator` (works in forks via `GITHUB_TOKEN`)
+
 ## Getting Started
 1. edit config.yaml for yourself
 2. make generate && make manifests && make install - for run in local or test env
