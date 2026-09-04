@@ -17,7 +17,7 @@ import (
 // ShardedIngressReconciler reconciles a ShardedIngress into per-shard
 // Ingress children.
 type ShardedIngressReconciler struct {
-	*Engine
+	*Engine[*networkingv1.Ingress]
 }
 
 func NewShardedIngressReconciler(c client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, settings Settings) *ShardedIngressReconciler {
@@ -25,7 +25,7 @@ func NewShardedIngressReconciler(c client.Client, scheme *runtime.Scheme, record
 		Engine: NewEngine(
 			c, scheme, recorder, settings,
 			newIngressAdapter(settings),
-			newIngressBuilder(settings),
+			newIngressRenderer(settings),
 			func() ShardedObject {
 				return &controllerv1.ShardedIngress{
 					TypeMeta: metav1.TypeMeta{Kind: "ShardedIngress", APIVersion: controllerv1.GroupVersion.String()},

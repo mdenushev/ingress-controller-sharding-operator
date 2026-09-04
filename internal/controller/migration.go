@@ -48,21 +48,23 @@ func isTmpChildName(parentName, objName string) bool {
 // differs from newShard, i.e. when a migration is needed. It returns "" when
 // the child is already recorded on newShard or not recorded at all.
 func reshardingConflict(status *controllerv1.ShardedStatus, newShard, childName string) string {
-	for oldShard, objs := range status.CreatedObjects {
+	oldShard := ""
+	for shard, objs := range status.CreatedObjects {
 		for _, obj := range objs {
-			if obj["name"] == childName && oldShard == newShard {
+			if obj["name"] != childName {
+				continue
+			}
+			if shard == newShard {
+				// Already recorded on the target shard: no migration,
+				// whatever other shards still list the child.
 				return ""
 			}
-		}
-	}
-	for oldShard, objs := range status.CreatedObjects {
-		for _, obj := range objs {
-			if obj["name"] == childName && oldShard != newShard {
-				return oldShard
+			if oldShard == "" {
+				oldShard = shard
 			}
 		}
 	}
-	return ""
+	return oldShard
 }
 
 // migrationClock evaluates the migration timeline annotations.
@@ -71,29 +73,40 @@ type migrationClock struct {
 	unregisterAnnotation string
 }
 
-// holdOldShard inspects a live tmp child and reports which old shard the main
-// child must keep while the migration window has not passed. ok is false once
-// the main child may switch to the new shard (or the annotations are absent).
-func (m migrationClock) holdOldShard(annotations map[string]string) (oldShard string, ok bool) {
+// migrationHold is the verdict of holdOldShard over a live tmp child.
+type migrationHold struct {
+	// Active is true while the main child must keep the old shard: the
+	// migration window has not passed yet (or has not even started).
+	Active bool
+	// OldShard is the shard recorded on the tmp child; set only when
+	// Active is true.
+	OldShard string
+}
+
+// holdOldShard inspects a live tmp child and decides whether the main child
+// must still keep the old shard. The hold ends (Active=false) once the
+// migration window has passed or the annotations are absent, letting the main
+// child switch to the new shard.
+func (m migrationClock) holdOldShard(annotations map[string]string) migrationHold {
 	if deleteAfterStr, exists := annotations[AutoDeleteAfterAnnotation]; exists {
 		deleteAfterTime, err := time.Parse(time.RFC3339, deleteAfterStr)
 		if err != nil {
-			return "", false
+			return migrationHold{}
 		}
 		// The tmp child dies at t0+3T; the main child holds the old
 		// shard until t0+T, i.e. while now < deleteAfter-2T.
 		timeBeforeChange := deleteAfterTime.Add(-m.terminationPeriod * 2)
 		if !time.Now().After(timeBeforeChange) {
 			if oldShard, exists := annotations[OldShardAnnotation]; exists {
-				return oldShard, true
+				return migrationHold{Active: true, OldShard: oldShard}
 			}
 		}
 	} else if oldShard, exists := annotations[OldShardAnnotation]; exists {
 		// The deletion pass has not stamped the tmp child yet: the
 		// migration clock has not started, keep the old shard.
-		return oldShard, true
+		return migrationHold{Active: true, OldShard: oldShard}
 	}
-	return "", false
+	return migrationHold{}
 }
 
 func parseDeleteAfterAnnotation(obj *unstructured.Unstructured) (deleteAfter time.Time, exists bool, err error) {

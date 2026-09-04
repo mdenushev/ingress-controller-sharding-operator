@@ -9,23 +9,23 @@ import (
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
 )
 
-// ingressBuilder renders the desired Ingress children of a ShardedIngress for
-// one shard.
-type ingressBuilder struct {
+// ingressRenderer renders the desired Ingress children of a ShardedIngress
+// for one shard.
+type ingressRenderer struct {
 	settings Settings
 }
 
-func newIngressBuilder(settings Settings) *ingressBuilder {
-	return &ingressBuilder{settings: settings}
+func newIngressRenderer(settings Settings) *ingressRenderer {
+	return &ingressRenderer{settings: settings}
 }
 
-func (b *ingressBuilder) BuildChildren(sharded ShardedObject, plan ShardPlan) ([]DesiredChild, error) {
+func (b *ingressRenderer) RenderChildren(sharded ShardedObject, plan ShardPlan) ([]DesiredChild[*networkingv1.Ingress], error) {
 	src, ok := sharded.(*controllerv1.ShardedIngress)
 	if !ok {
 		return nil, fmt.Errorf("unsupported sharded object type: %T", sharded)
 	}
 
-	var children []DesiredChild
+	var children []DesiredChild[*networkingv1.Ingress]
 
 	shardedIngress := src.DeepCopy()
 	if shardedIngress.Spec.Template.Labels == nil {
@@ -44,7 +44,7 @@ func (b *ingressBuilder) BuildChildren(sharded ShardedObject, plan ShardPlan) ([
 		tempShardedIngress.Spec.Template.Labels[b.settings.ServiceDiscoveryClassLabel] = plan.OldShard
 		tempShardedIngress.Spec.Template.Annotations[OldShardAnnotation] = plan.OldShard
 		tmpIngress := renderIngress(tempShardedIngress, tmpName, plan.OldShard)
-		children = append(children, DesiredChild{Shard: plan.Shard, Obj: tmpIngress})
+		children = append(children, DesiredChild[*networkingv1.Ingress]{Shard: plan.Shard, Obj: tmpIngress})
 	}
 
 	shardedIngress.Spec.Template.Labels[b.settings.ServiceDiscoveryClassLabel] = plan.EffectiveClass
@@ -73,7 +73,7 @@ func (b *ingressBuilder) BuildChildren(sharded ShardedObject, plan ShardPlan) ([
 		mainName = fmt.Sprintf("%s-%d", shardedIngress.Name, plan.Shard.Number)
 	}
 
-	main := DesiredChild{
+	main := DesiredChild[*networkingv1.Ingress]{
 		Shard: plan.Shard,
 		Obj:   renderIngress(shardedIngress, mainName, plan.EffectiveClass),
 	}

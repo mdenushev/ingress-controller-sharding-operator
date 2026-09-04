@@ -30,7 +30,7 @@ const (
 )
 
 // eventf records a Normal kube event on the parent when a recorder is wired.
-func (e *Engine) eventf(s *scope, reason, format string, args ...interface{}) {
+func (e *Engine[C]) eventf(s *scope, reason, format string, args ...interface{}) {
 	if e.Recorder == nil {
 		return
 	}
@@ -38,7 +38,7 @@ func (e *Engine) eventf(s *scope, reason, format string, args ...interface{}) {
 }
 
 // warnf records a Warning kube event on the parent when a recorder is wired.
-func (e *Engine) warnf(s *scope, reason, format string, args ...interface{}) {
+func (e *Engine[C]) warnf(s *scope, reason, format string, args ...interface{}) {
 	if e.Recorder == nil {
 		return
 	}
@@ -59,7 +59,7 @@ func findInStatus(shard, kind, name string, createdObjects *map[string][]map[str
 // updateStatusWithRetry runs mutate (which must modify s.obj and push the
 // status) and retries on version conflicts, refreshing the object in between
 // so mutate re-applies on top of the latest version.
-func (e *Engine) updateStatusWithRetry(s *scope, mutate func() error) error {
+func (e *Engine[C]) updateStatusWithRetry(s *scope, mutate func() error) error {
 	maxRetries := 5
 	var err error
 	for i := 0; i < maxRetries; i++ {
@@ -81,7 +81,7 @@ func (e *Engine) updateStatusWithRetry(s *scope, mutate func() error) error {
 
 // addChildToStatus records the child under the shard in the parent status and
 // keeps the per-class child metric in sync.
-func (e *Engine) addChildToStatus(s *scope, kind, name, shardName string) error {
+func (e *Engine[C]) addChildToStatus(s *scope, kind, name, shardName string) error {
 	if shardName == "" || kind == "" || name == "" {
 		return nil
 	}
@@ -122,7 +122,7 @@ func (e *Engine) addChildToStatus(s *scope, kind, name, shardName string) error 
 
 // removeChildFromStatus drops every record of the named child from the parent
 // status.
-func (e *Engine) removeChildFromStatus(s *scope, name string) error {
+func (e *Engine[C]) removeChildFromStatus(s *scope, name string) error {
 	return e.updateStatusWithRetry(s, func() error {
 		status := s.obj.GetShardedStatus()
 		for key, valSlice := range status.CreatedObjects {
@@ -143,7 +143,7 @@ func (e *Engine) removeChildFromStatus(s *scope, name string) error {
 // setLifecycle publishes the phase, conditions and observedGeneration on the
 // parent status. It writes only when something actually changed to avoid
 // update storms.
-func (e *Engine) setLifecycle(s *scope, phase controllerv1.ShardedPhase, ready, resharding metav1.Condition) error {
+func (e *Engine[C]) setLifecycle(s *scope, phase controllerv1.ShardedPhase, ready, resharding metav1.Condition) error {
 	return e.updateStatusWithRetry(s, func() error {
 		status := s.obj.GetShardedStatus()
 		changed := false

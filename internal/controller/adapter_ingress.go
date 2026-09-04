@@ -1,13 +1,11 @@
 package controller
 
 import (
-	"fmt"
 	"strings"
 
 	networkingv1 "k8s.io/api/networking/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // ingressAdapter adapts networking/v1 Ingress children to the engine.
@@ -29,7 +27,7 @@ func (a *ingressAdapter) ListGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "IngressList"}
 }
 
-func (a *ingressAdapter) NewObject() client.Object {
+func (a *ingressAdapter) NewObject() *networkingv1.Ingress {
 	return &networkingv1.Ingress{}
 }
 
@@ -38,16 +36,7 @@ func (a *ingressAdapter) NewObject() client.Object {
 // annotation and TLS hosts outside the main domain) are treated as equal as
 // long as the desired values are a subset of the existing ones — otherwise
 // every reconcile would fight the webhook.
-func (a *ingressAdapter) Equal(existing, desired client.Object) (bool, error) {
-	old, ok := existing.(*networkingv1.Ingress)
-	if !ok {
-		return false, fmt.Errorf("do not know how to compare %T and %T", existing, desired)
-	}
-	new, ok := desired.(*networkingv1.Ingress)
-	if !ok {
-		return false, fmt.Errorf("do not know how to compare %T and %T", existing, desired)
-	}
-
+func (a *ingressAdapter) Equal(old, new *networkingv1.Ingress) (bool, error) {
 	mutateHostsValue, exists := new.Annotations[a.mutatingWebhookAnnotation]
 	if exists && mutateHostsValue != "" && mutateHostsValue != "false" {
 		oldAnnotations := old.Annotations
@@ -129,20 +118,12 @@ func (a *ingressAdapter) Equal(existing, desired client.Object) (bool, error) {
 
 // Merge copies the desired spec and metadata onto the existing Ingress so the
 // update keeps resourceVersion and server-populated fields.
-func (a *ingressAdapter) Merge(existing, desired client.Object) (client.Object, error) {
-	old, ok := existing.(*networkingv1.Ingress)
-	if !ok {
-		return nil, fmt.Errorf("unsupported object type: %T", existing)
-	}
-	new, ok := desired.(*networkingv1.Ingress)
-	if !ok {
-		return nil, fmt.Errorf("unsupported object type: %T", desired)
-	}
+func (a *ingressAdapter) Merge(old, new *networkingv1.Ingress) *networkingv1.Ingress {
 	old.Spec = new.Spec
 	old.Annotations = new.Annotations
 	old.Labels = new.Labels
 	old.OwnerReferences = new.OwnerReferences
-	return old, nil
+	return old
 }
 
 func contains(slice []string, item string) bool {

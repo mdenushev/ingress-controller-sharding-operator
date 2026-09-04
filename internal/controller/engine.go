@@ -47,14 +47,15 @@ const (
 //
 // Every mutating action ends the pass and requeues, so the loop applies one
 // change at a time and reports progress via the parent status and events.
-type Engine struct {
+// C is the concrete child type (*networkingv1.Ingress, *contourv1.HTTPProxy).
+type Engine[C client.Object] struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	Settings Settings
 
-	Adapter   ChildAdapter
-	Builder   DesiredBuilder
+	Adapter   ChildAdapter[C]
+	Renderer  DesiredRenderer[C]
 	Selector  ShardSelector
 	Scheduler Scheduler
 	// NewSharded returns an empty parent object to fetch into.
@@ -69,15 +70,15 @@ type Engine struct {
 }
 
 // NewEngine wires an Engine for one parent/child type pair.
-func NewEngine(c client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, settings Settings, adapter ChildAdapter, builder DesiredBuilder, newSharded func() ShardedObject, ctrlName string) *Engine {
+func NewEngine[C client.Object](c client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, settings Settings, adapter ChildAdapter[C], renderer DesiredRenderer[C], newSharded func() ShardedObject, ctrlName string) *Engine[C] {
 	tracker := newStateTracker(ctrlName)
-	return &Engine{
+	return &Engine[C]{
 		Client:     c,
 		Scheme:     scheme,
 		Recorder:   recorder,
 		Settings:   settings,
 		Adapter:    adapter,
-		Builder:    builder,
+		Renderer:   renderer,
 		Selector:   &hashShardSelector{maxShards: settings.MaxShards},
 		Scheduler:  newCooldownScheduler(settings.TerminationPeriod, settings.ShardUpdateCooldown, tracker),
 		NewSharded: newSharded,
@@ -107,7 +108,7 @@ type scope struct {
 	mutated bool
 }
 
-func (e *Engine) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (e *Engine[C]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	if err := e.ensureInitialized(ctx); err != nil {
@@ -187,7 +188,7 @@ func (e *Engine) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, 
 }
 
 // ensureInitialized discovers the cluster shards once before the first pass.
-func (e *Engine) ensureInitialized(ctx context.Context) error {
+func (e *Engine[C]) ensureInitialized(ctx context.Context) error {
 	e.initMu.Lock()
 	defer e.initMu.Unlock()
 	if e.initialized {
@@ -203,8 +204,8 @@ func (e *Engine) ensureInitialized(ctx context.Context) error {
 
 // computeDesired resolves the migration context of every shard and renders
 // the desired children.
-func (e *Engine) computeDesired(s *scope) ([]DesiredChild, error) {
-	var all []DesiredChild
+func (e *Engine[C]) computeDesired(s *scope) ([]DesiredChild[C], error) {
+	var all []DesiredChild[C]
 	for _, shard := range s.shards {
 		plan, err := e.resolveShardPlan(s, shard)
 		if err != nil {
@@ -216,7 +217,7 @@ func (e *Engine) computeDesired(s *scope) ([]DesiredChild, error) {
 		if plan.CreateTmp {
 			e.eventf(s, EventReshardingStarted, "Resharding from %s to %s: creating tmp child to keep the old shard serving", plan.OldShard, shard.Name)
 		}
-		children, err := e.Builder.BuildChildren(s.obj, plan)
+		children, err := e.Renderer.RenderChildren(s.obj, plan)
 		if err != nil {
 			return nil, err
 		}
@@ -228,7 +229,7 @@ func (e *Engine) computeDesired(s *scope) ([]DesiredChild, error) {
 // resolveShardPlan detects whether the shard is mid-migration by combining
 // the recorded status with the live tmp child, and decides which ingress
 // class the children must carry right now.
-func (e *Engine) resolveShardPlan(s *scope, shard Shard) (ShardPlan, error) {
+func (e *Engine[C]) resolveShardPlan(s *scope, shard Shard) (ShardPlan, error) {
 	plan := ShardPlan{
 		Shard:          shard,
 		EffectiveClass: shard.Name,
@@ -256,9 +257,9 @@ func (e *Engine) resolveShardPlan(s *scope, shard Shard) (ShardPlan, error) {
 
 	// The tmp child exists: while its migration window has not passed the
 	// main child keeps the old class so traffic stays on the old shard.
-	if oldShard, hold := e.clock.holdOldShard(tmp.GetAnnotations()); hold {
-		plan.OldShard = oldShard
-		plan.EffectiveClass = oldShard
+	if hold := e.clock.holdOldShard(tmp.GetAnnotations()); hold.Active {
+		plan.OldShard = hold.OldShard
+		plan.EffectiveClass = hold.OldShard
 	}
 	return plan, nil
 }
@@ -267,7 +268,7 @@ func (e *Engine) resolveShardPlan(s *scope, shard Shard) (ShardPlan, error) {
 // children, updates drifted ones and prunes children that are no longer
 // desired. A create or delete ends the pass immediately so the loop applies
 // one change at a time.
-func (e *Engine) applyChildren(s *scope, desired []DesiredChild) (ctrl.Result, error) {
+func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) (ctrl.Result, error) {
 	logger := log.FromContext(s.ctx)
 	statusList := make(map[string][]map[string]string)
 
@@ -310,7 +311,7 @@ func (e *Engine) applyChildren(s *scope, desired []DesiredChild) (ctrl.Result, e
 	return result, nil
 }
 
-func (e *Engine) createChild(s *scope, child DesiredChild) (ctrl.Result, error) {
+func (e *Engine[C]) createChild(s *scope, child DesiredChild[C]) (ctrl.Result, error) {
 	logger := log.FromContext(s.ctx)
 	kind := e.Adapter.Kind()
 	name := child.Obj.GetName()
@@ -338,12 +339,12 @@ func (e *Engine) createChild(s *scope, child DesiredChild) (ctrl.Result, error) 
 	return ctrl.Result{}, nil
 }
 
-func (e *Engine) updateChild(s *scope, existing client.Object, child DesiredChild) error {
+func (e *Engine[C]) updateChild(s *scope, existing C, child DesiredChild[C]) error {
 	logger := log.FromContext(s.ctx)
 	kind := e.Adapter.Kind()
 	name := child.Obj.GetName()
 
-	equal, err := e.Adapter.Equal(existing.DeepCopyObject().(client.Object), child.Obj.DeepCopyObject().(client.Object))
+	equal, err := e.Adapter.Equal(existing.DeepCopyObject().(C), child.Obj.DeepCopyObject().(C))
 	if err != nil {
 		logger.Error(err, "unable to compare", "objectKind", kind, "objectName", name)
 		return err
@@ -352,13 +353,7 @@ func (e *Engine) updateChild(s *scope, existing client.Object, child DesiredChil
 		return nil
 	}
 
-	merged, err := e.Adapter.Merge(existing, child.Obj)
-	if err != nil {
-		logger.Error(err, "unable to update Spec", "objectKind", kind, "objectName", name)
-		e.tracker.markErrored(s.key)
-		return err
-	}
-
+	merged := e.Adapter.Merge(existing, child.Obj)
 	if err := e.Update(s.ctx, merged); err != nil {
 		logger.Error(err, "unable to update", "objectKind", kind, "objectName", name)
 		e.tracker.markErrored(s.key)
@@ -378,7 +373,7 @@ func (e *Engine) updateChild(s *scope, existing client.Object, child DesiredChil
 }
 
 // listChildren lists the live children owned by the parent.
-func (e *Engine) listChildren(s *scope) (unstructured.UnstructuredList, error) {
+func (e *Engine[C]) listChildren(s *scope) (unstructured.UnstructuredList, error) {
 	childObjs := unstructured.UnstructuredList{}
 	childObjs.SetGroupVersionKind(e.Adapter.ListGVK())
 
@@ -402,7 +397,7 @@ func (e *Engine) listChildren(s *scope) (unstructured.UnstructuredList, error) {
 // longer desired for graceful deletion (unregister from service discovery
 // first, delete after the termination window). It also drops status records
 // whose objects are gone.
-func (e *Engine) pruneChildren(s *scope, currentList map[string][]map[string]string) (ctrl.Result, error) {
+func (e *Engine[C]) pruneChildren(s *scope, currentList map[string][]map[string]string) (ctrl.Result, error) {
 	logger := log.FromContext(s.ctx)
 	status := s.obj.GetShardedStatus()
 
@@ -490,7 +485,7 @@ func (e *Engine) pruneChildren(s *scope, currentList map[string][]map[string]str
 // first stamp auto-delete-after, then mark for service discovery
 // unregistering one termination period before the deadline, and only report
 // shouldDelete once the deadline passed.
-func (e *Engine) evaluateDeletionTiming(s *scope, obj *unstructured.Unstructured, shardName string) (shouldDelete bool, err error) {
+func (e *Engine[C]) evaluateDeletionTiming(s *scope, obj *unstructured.Unstructured, shardName string) (shouldDelete bool, err error) {
 	logger := log.FromContext(s.ctx)
 
 	deleteAfterTime, deleteAfterExists, err := parseDeleteAfterAnnotation(obj)
@@ -545,7 +540,7 @@ func (e *Engine) evaluateDeletionTiming(s *scope, obj *unstructured.Unstructured
 // reconcileTerminating drains the children of a deleted parent: every child
 // is marked for service discovery unregistering, deleted after its window,
 // and only then the finalizer is removed.
-func (e *Engine) reconcileTerminating(s *scope) (ctrl.Result, error) {
+func (e *Engine[C]) reconcileTerminating(s *scope) (ctrl.Result, error) {
 	logger := log.FromContext(s.ctx)
 
 	if err := e.setLifecycle(s, controllerv1.PhaseTerminating,
@@ -638,7 +633,7 @@ func (e *Engine) reconcileTerminating(s *scope) (ctrl.Result, error) {
 }
 
 // publishLifecycle mirrors the outcome of the pass into the parent status.
-func (e *Engine) publishLifecycle(s *scope, result ctrl.Result) {
+func (e *Engine[C]) publishLifecycle(s *scope, result ctrl.Result) {
 	logger := log.FromContext(s.ctx)
 
 	switch {

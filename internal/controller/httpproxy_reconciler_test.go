@@ -54,7 +54,7 @@ func newMigratingShardedHTTPProxy() *controllerv1.ShardedHTTPProxy {
 
 // newTestHTTPProxyEngine wires an Engine over a fake client plus the scope of
 // one reconcile pass pinned to the new shard.
-func newTestHTTPProxyEngine(t *testing.T, sharded *controllerv1.ShardedHTTPProxy, existing ...client.Object) (*Engine, *scope) {
+func newTestHTTPProxyEngine(t *testing.T, sharded *controllerv1.ShardedHTTPProxy, existing ...client.Object) (*Engine[*contourv1.HTTPProxy], *scope) {
 	t.Helper()
 
 	testScheme := runtime.NewScheme()
@@ -82,7 +82,7 @@ func newTestHTTPProxyEngine(t *testing.T, sharded *controllerv1.ShardedHTTPProxy
 	engine := NewEngine(
 		fakeClient, testScheme, nil, settings,
 		newHTTPProxyAdapter(settings),
-		newHTTPProxyBuilder(settings),
+		newHTTPProxyRenderer(settings),
 		func() ShardedObject {
 			return &controllerv1.ShardedHTTPProxy{
 				TypeMeta: metav1.TypeMeta{Kind: "ShardedHTTPProxy", APIVersion: controllerv1.GroupVersion.String()},
@@ -101,15 +101,15 @@ func newTestHTTPProxyEngine(t *testing.T, sharded *controllerv1.ShardedHTTPProxy
 	return engine, s
 }
 
-func findChild(t *testing.T, objs []DesiredChild, name string) (DesiredChild, *contourv1.HTTPProxy) {
+func findChild(t *testing.T, objs []DesiredChild[*contourv1.HTTPProxy], name string) (DesiredChild[*contourv1.HTTPProxy], *contourv1.HTTPProxy) {
 	t.Helper()
 	for _, o := range objs {
 		if o.Obj.GetName() == name {
-			return o, o.Obj.(*contourv1.HTTPProxy)
+			return o, o.Obj
 		}
 	}
 	t.Fatalf("child object %q not found in generated list", name)
-	return DesiredChild{}, nil
+	return DesiredChild[*contourv1.HTTPProxy]{}, nil
 }
 
 // During class migration the tmp object must carry the OLD shard class in

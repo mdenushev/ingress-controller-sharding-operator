@@ -84,38 +84,39 @@ type ShardPlan struct {
 	UseAllShards bool
 }
 
-// DesiredChild is one child object that should exist in the cluster.
-type DesiredChild struct {
+// DesiredChild is one child object of type C that should exist in the
+// cluster.
+type DesiredChild[C client.Object] struct {
 	// Shard is the bookkeeping shard (always the new one, even while the
 	// object itself still carries the old class mid-migration).
 	Shard Shard
-	Obj   client.Object
+	Obj   C
 	// AlsoBook lists extra child names recorded in the parent status for
 	// this shard, keeping mid-migration objects off the pruning list.
 	AlsoBook []string
 }
 
-// DesiredBuilder renders the desired children of a parent for one shard.
+// DesiredRenderer renders the desired children of a parent for one shard.
 // Implementations must not touch the cluster.
-type DesiredBuilder interface {
-	BuildChildren(sharded ShardedObject, plan ShardPlan) ([]DesiredChild, error)
+type DesiredRenderer[C client.Object] interface {
+	RenderChildren(sharded ShardedObject, plan ShardPlan) ([]DesiredChild[C], error)
 }
 
-// ChildAdapter hides the concrete child type (Ingress or HTTPProxy) from the
-// engine.
-type ChildAdapter interface {
+// ChildAdapter provides the child-type-specific operations (Ingress or
+// HTTPProxy) the engine needs.
+type ChildAdapter[C client.Object] interface {
 	// Kind of the child objects, e.g. "Ingress".
 	Kind() string
 	// ListGVK is the GroupVersionKind of the child list type.
 	ListGVK() schema.GroupVersionKind
 	// NewObject returns an empty child object.
-	NewObject() client.Object
+	NewObject() C
 	// Equal reports whether the existing child already matches the desired
 	// one, ignoring differences produced by cluster mutation webhooks.
-	Equal(existing, desired client.Object) (bool, error)
+	Equal(existing, desired C) (bool, error)
 	// Merge copies the desired spec and metadata onto the existing object,
 	// keeping server-populated fields intact.
-	Merge(existing, desired client.Object) (client.Object, error)
+	Merge(existing, desired C) C
 }
 
 // ShardSelector decides which shards a parent lives on.

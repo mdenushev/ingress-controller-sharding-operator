@@ -30,7 +30,7 @@ flowchart LR
   namespace is hashed (xxhash) modulo the shard count of the class; with the
   `use-all-class-shards` annotation the parent is rendered on every shard.
 - Rendering: `internal/controller/desired_ingress.go`,
-  `desired_httpproxy.go` (`DesiredBuilder`). Builders are pure — the engine
+  `desired_httpproxy.go` (`DesiredRenderer`). Renderers are pure — the engine
   resolves the migration context (see below) before they run.
 
 ## Compare with current and fix
@@ -88,7 +88,7 @@ per-shard queue can replace this implementation behind the same interface.
 | Concern | Where |
 |---------|-------|
 | Lifecycle engine (one generic `Reconcile`) | `internal/controller/engine.go` |
-| Interfaces (`ChildAdapter`, `DesiredBuilder`, `ShardSelector`, `Scheduler`) | `internal/controller/interfaces.go` |
+| Interfaces (`ChildAdapter`, `DesiredRenderer`, `ShardSelector`, `Scheduler`) | `internal/controller/interfaces.go` |
 | Shard selection | `internal/controller/shards.go` |
 | Desired-state rendering | `internal/controller/desired_*.go` |
 | Child compare/merge per type | `internal/controller/adapter_*.go` |

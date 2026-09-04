@@ -10,24 +10,24 @@ import (
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
 )
 
-// httpProxyBuilder renders the desired HTTPProxy children of a
+// httpProxyRenderer renders the desired HTTPProxy children of a
 // ShardedHTTPProxy for one shard: a root proxy plus one proxy per extra
 // virtual host, each including the root.
-type httpProxyBuilder struct {
+type httpProxyRenderer struct {
 	settings Settings
 }
 
-func newHTTPProxyBuilder(settings Settings) *httpProxyBuilder {
-	return &httpProxyBuilder{settings: settings}
+func newHTTPProxyRenderer(settings Settings) *httpProxyRenderer {
+	return &httpProxyRenderer{settings: settings}
 }
 
-func (b *httpProxyBuilder) BuildChildren(sharded ShardedObject, plan ShardPlan) ([]DesiredChild, error) {
+func (b *httpProxyRenderer) RenderChildren(sharded ShardedObject, plan ShardPlan) ([]DesiredChild[*contourv1.HTTPProxy], error) {
 	src, ok := sharded.(*controllerv1.ShardedHTTPProxy)
 	if !ok {
 		return nil, fmt.Errorf("unsupported sharded object type: %T", sharded)
 	}
 
-	var children []DesiredChild
+	var children []DesiredChild[*contourv1.HTTPProxy]
 
 	shardedHTTPProxy := src.DeepCopy()
 	if shardedHTTPProxy.Spec.Template.Labels == nil {
@@ -49,12 +49,12 @@ func (b *httpProxyBuilder) BuildChildren(sharded ShardedObject, plan ShardPlan) 
 
 		tmpProxy := b.renderHTTPProxy(tempShardedHTTPProxy, tmpName, plan.OldShard, nil)
 		tmpProxy.ObjectMeta.Labels[b.settings.RootHTTPProxyLabel] = "true"
-		children = append(children, DesiredChild{Shard: plan.Shard, Obj: tmpProxy})
+		children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: tmpProxy})
 
 		for i, host := range b.virtualHosts(tempShardedHTTPProxy) {
 			virtualHost := newVirtualHostFromTemplate(tempShardedHTTPProxy.Spec.Template.Spec.VirtualHost, host)
 			httpProxy := b.renderHTTPProxy(tempShardedHTTPProxy, fmt.Sprintf("%s-%d", tmpName, i), plan.OldShard, virtualHost)
-			children = append(children, DesiredChild{Shard: plan.Shard, Obj: httpProxy})
+			children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: httpProxy})
 		}
 	}
 
@@ -68,12 +68,12 @@ func (b *httpProxyBuilder) BuildChildren(sharded ShardedObject, plan ShardPlan) 
 
 	baseHTTPProxy := b.renderHTTPProxy(shardedHTTPProxy, mainName, plan.EffectiveClass, nil)
 	baseHTTPProxy.ObjectMeta.Labels[b.settings.RootHTTPProxyLabel] = "true"
-	children = append(children, DesiredChild{Shard: plan.Shard, Obj: baseHTTPProxy})
+	children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: baseHTTPProxy})
 
 	for i, host := range b.virtualHosts(shardedHTTPProxy) {
 		virtualHost := newVirtualHostFromTemplate(shardedHTTPProxy.Spec.Template.Spec.VirtualHost, host)
 		httpProxy := b.renderHTTPProxy(shardedHTTPProxy, fmt.Sprintf("%s-%d", mainName, i), plan.EffectiveClass, virtualHost)
-		children = append(children, DesiredChild{Shard: plan.Shard, Obj: httpProxy})
+		children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: httpProxy})
 	}
 
 	return children, nil
@@ -81,7 +81,7 @@ func (b *httpProxyBuilder) BuildChildren(sharded ShardedObject, plan ShardPlan) 
 
 // virtualHosts lists the extra hosts requested via the virtual-hosts
 // annotation on the parent.
-func (b *httpProxyBuilder) virtualHosts(shardedHTTPProxy *controllerv1.ShardedHTTPProxy) []string {
+func (b *httpProxyRenderer) virtualHosts(shardedHTTPProxy *controllerv1.ShardedHTTPProxy) []string {
 	serverAlias, exists := shardedHTTPProxy.Annotations[b.settings.VirtualHostsAnnotation]
 	if !exists || serverAlias == "" {
 		return nil
@@ -100,7 +100,7 @@ func newVirtualHostFromTemplate(template *contourv1.VirtualHost, host string) *c
 	return virtualHost
 }
 
-func (b *httpProxyBuilder) renderHTTPProxy(shardedHTTPProxy *controllerv1.ShardedHTTPProxy, name, ingressClass string, virtualHost *contourv1.VirtualHost) *contourv1.HTTPProxy {
+func (b *httpProxyRenderer) renderHTTPProxy(shardedHTTPProxy *controllerv1.ShardedHTTPProxy, name, ingressClass string, virtualHost *contourv1.VirtualHost) *contourv1.HTTPProxy {
 	httpProxy := &contourv1.HTTPProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,

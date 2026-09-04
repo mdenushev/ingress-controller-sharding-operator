@@ -66,7 +66,7 @@ func TestReconcileLifecycleToReady(t *testing.T) {
 	engine := NewEngine(
 		fakeClient, testScheme, recorder, settings,
 		newHTTPProxyAdapter(settings),
-		newHTTPProxyBuilder(settings),
+		newHTTPProxyRenderer(settings),
 		func() ShardedObject {
 			return &controllerv1.ShardedHTTPProxy{
 				TypeMeta: metav1.TypeMeta{Kind: "ShardedHTTPProxy", APIVersion: controllerv1.GroupVersion.String()},

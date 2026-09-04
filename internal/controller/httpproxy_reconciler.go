@@ -17,7 +17,7 @@ import (
 // ShardedHTTPProxyReconciler reconciles a ShardedHTTPProxy into per-shard
 // Contour HTTPProxy children.
 type ShardedHTTPProxyReconciler struct {
-	*Engine
+	*Engine[*contourv1.HTTPProxy]
 }
 
 func NewShardedHTTPProxyReconciler(c client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, settings Settings) *ShardedHTTPProxyReconciler {
@@ -25,7 +25,7 @@ func NewShardedHTTPProxyReconciler(c client.Client, scheme *runtime.Scheme, reco
 		Engine: NewEngine(
 			c, scheme, recorder, settings,
 			newHTTPProxyAdapter(settings),
-			newHTTPProxyBuilder(settings),
+			newHTTPProxyRenderer(settings),
 			func() ShardedObject {
 				return &controllerv1.ShardedHTTPProxy{
 					TypeMeta: metav1.TypeMeta{Kind: "ShardedHTTPProxy", APIVersion: controllerv1.GroupVersion.String()},

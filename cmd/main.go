@@ -123,7 +123,11 @@ func main() {
 		settings := baseSettings
 		settings.MaxShards = conf.ShardedIngress.Shards
 		shardedIngressReconciler := controller.NewShardedIngressReconciler(
-			mgr.GetClient(), mgr.GetScheme(), mgr.GetEventRecorderFor("shardedingress-controller"), settings)
+			mgr.GetClient(),
+			mgr.GetScheme(),
+			mgr.GetEventRecorderFor("shardedingress-controller"),
+			settings,
+		)
 
 		if err := shardedIngressReconciler.SetupWithManager(mgr, 1, conf.RateLimit.ApiRateLimit, conf.RateLimit.ApiBurstLimit); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "ShardedIngress")
@@ -135,7 +139,11 @@ func main() {
 		settings := baseSettings
 		settings.MaxShards = conf.ShardedHTTPProxy.Shards
 		shardedHTTPProxyReconciler := controller.NewShardedHTTPProxyReconciler(
-			mgr.GetClient(), mgr.GetScheme(), mgr.GetEventRecorderFor("shardedhttpproxy-controller"), settings)
+			mgr.GetClient(),
+			mgr.GetScheme(),
+			mgr.GetEventRecorderFor("shardedhttpproxy-controller"),
+			settings,
+		)
 
 		if err := shardedHTTPProxyReconciler.SetupWithManager(mgr, 1, conf.RateLimit.ApiRateLimit, conf.RateLimit.ApiBurstLimit); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "ShardedHTTPProxy")
