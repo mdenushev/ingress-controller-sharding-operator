@@ -32,7 +32,7 @@ const (
 // child object under the old shard, i.e. mid class migration.
 func newMigratingShardedHTTPProxy() *controllerv1.ShardedHTTPProxy {
 	return &controllerv1.ShardedHTTPProxy{
-		// TypeMeta drives GetKind, which getObjectChildren matches against the
+		// TypeMeta drives GetKind, which listChildren matches against the
 		// children's owner references.
 		TypeMeta:   metav1.TypeMeta{Kind: "ShardedHTTPProxy", APIVersion: controllerv1.GroupVersion.String()},
 		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
@@ -52,7 +52,9 @@ func newMigratingShardedHTTPProxy() *controllerv1.ShardedHTTPProxy {
 	}
 }
 
-func newTestShardedHTTPProxyReconciler(t *testing.T, sharded *controllerv1.ShardedHTTPProxy, existing ...client.Object) *ShardedHTTPProxyReconciler {
+// newTestHTTPProxyEngine wires an Engine over a fake client plus the scope of
+// one reconcile pass pinned to the new shard.
+func newTestHTTPProxyEngine(t *testing.T, sharded *controllerv1.ShardedHTTPProxy, existing ...client.Object) (*Engine, *scope) {
 	t.Helper()
 
 	testScheme := runtime.NewScheme()
@@ -63,43 +65,43 @@ func newTestShardedHTTPProxyReconciler(t *testing.T, sharded *controllerv1.Shard
 		t.Fatal(err)
 	}
 
-	classLabel := testClassLabel
-	rootLabel := testRootLabel
-	vhAnnotation := testVHAnnotation
-	unregisterAnnotation := testUnregisterAnnotation
-	terminationPeriod := time.Minute
+	settings := Settings{
+		TerminationPeriod:          time.Minute,
+		ServiceDiscoveryClassLabel: testClassLabel,
+		RootHTTPProxyLabel:         testRootLabel,
+		VirtualHostsAnnotation:     testVHAnnotation,
+		UnregisterAnnotation:       testUnregisterAnnotation,
+	}
 
-	r := &ShardedHTTPProxyReconciler{ShardedHTTPProxy: sharded}
-	// TypeMeta drives GetChildKind, without which deleteUnlistedObjects bails
-	// out before looking at any child.
-	r.ChildObject = contourv1.HTTPProxy{
-		TypeMeta: metav1.TypeMeta{Kind: "HTTPProxy", APIVersion: contourv1.GroupVersion.String()},
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithStatusSubresource(&controllerv1.ShardedHTTPProxy{}).
+		WithObjects(append([]client.Object{sharded}, existing...)...).
+		Build()
+
+	engine := NewEngine(
+		fakeClient, testScheme, nil, settings,
+		newHTTPProxyAdapter(settings),
+		newHTTPProxyBuilder(settings),
+		func() ShardedObject {
+			return &controllerv1.ShardedHTTPProxy{
+				TypeMeta: metav1.TypeMeta{Kind: "ShardedHTTPProxy", APIVersion: controllerv1.GroupVersion.String()},
+			}
+		},
+		"shardedhttpproxy",
+	)
+
+	s := &scope{
+		ctx:    context.Background(),
+		req:    ctrl.Request{NamespacedName: types.NamespacedName{Namespace: sharded.Namespace, Name: sharded.Name}},
+		key:    sharded.Namespace + "/" + sharded.Name,
+		obj:    sharded,
+		shards: []Shard{{Number: 0, Name: testNewShardClass}},
 	}
-	r.ShardedReconciler = ShardedReconciler{
-		Client: fake.NewClientBuilder().
-			WithScheme(testScheme).
-			WithStatusSubresource(&controllerv1.ShardedHTTPProxy{}).
-			WithObjects(append([]client.Object{sharded}, existing...)...).
-			Build(),
-		Scheme:                               testScheme,
-		ctx:                                  context.Background(),
-		req:                                  &ctrl.Request{NamespacedName: types.NamespacedName{Namespace: sharded.Namespace, Name: sharded.Name}},
-		objKey:                               sharded.Namespace + "/" + sharded.Name,
-		ctrlName:                             "shardedhttpproxy",
-		ShardedObject:                        sharded,
-		ChildObject:                          &r.ChildObject,
-		TerminationPeriod:                    &terminationPeriod,
-		AdditionalServiceDiscoveryClassLabel: &classLabel,
-		RootHTTPProxyLabel:                   &rootLabel,
-		VirtualHostsHTTPProxyAnnotation:      &vhAnnotation,
-		UnregisterAnnotation:                 &unregisterAnnotation,
-		Shards:                               []Shards{{ShardNumber: 0, ShardName: testNewShardClass}},
-	}
-	r.initializeCache()
-	return r
+	return engine, s
 }
 
-func findChild(t *testing.T, objs []NewChildObj, name string) (NewChildObj, *contourv1.HTTPProxy) {
+func findChild(t *testing.T, objs []DesiredChild, name string) (DesiredChild, *contourv1.HTTPProxy) {
 	t.Helper()
 	for _, o := range objs {
 		if o.Obj.GetName() == name {
@@ -107,7 +109,7 @@ func findChild(t *testing.T, objs []NewChildObj, name string) (NewChildObj, *con
 		}
 	}
 	t.Fatalf("child object %q not found in generated list", name)
-	return NewChildObj{}, nil
+	return DesiredChild{}, nil
 }
 
 // During class migration the tmp object must carry the OLD shard class in
@@ -115,44 +117,45 @@ func findChild(t *testing.T, objs []NewChildObj, name string) (NewChildObj, *con
 // here (empty class) poisons the tmp object's old-shard annotation and makes
 // every subsequent reconcile wipe the class from the main child object,
 // which then loops create/delete forever.
-func TestNewHTTPProxiesMigrationCreatesTmpWithOldClass(t *testing.T) {
+func TestDesiredChildrenMigrationCreatesTmpWithOldClass(t *testing.T) {
 	g := NewWithT(t)
 
-	r := newTestShardedHTTPProxyReconciler(t, newMigratingShardedHTTPProxy())
-	objs, err := r.NewHTTPProxiesFromShardedHTTPProxy()
+	e, s := newTestHTTPProxyEngine(t, newMigratingShardedHTTPProxy())
+	objs, err := e.computeDesired(s)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(objs).To(HaveLen(2))
+	g.Expect(s.resharding).To(BeTrue(), "migration pass must classify as resharding")
 
 	_, tmp := findChild(t, objs, "app-0-tmp")
 	g.Expect(tmp.Spec.IngressClassName).To(Equal(testOldShardClass))
 	g.Expect(tmp.Labels).To(HaveKeyWithValue(testClassLabel, testOldShardClass))
 	g.Expect(tmp.Labels).To(HaveKeyWithValue(testRootLabel, "true"))
-	g.Expect(tmp.Annotations).To(HaveKeyWithValue("old-shard", testOldShardClass))
+	g.Expect(tmp.Annotations).To(HaveKeyWithValue(OldShardAnnotation, testOldShardClass))
 
 	mainChild, main := findChild(t, objs, "app-0")
 	g.Expect(main.Spec.IngressClassName).To(Equal(testOldShardClass))
 	g.Expect(main.Labels).To(HaveKeyWithValue(testClassLabel, testOldShardClass))
 	// The main child is accounted under the new shard so that
-	// deleteUnlistedObjects does not schedule it for deletion mid-migration.
-	g.Expect(mainChild.ShardName).To(Equal(testNewShardClass))
+	// pruneChildren does not schedule it for deletion mid-migration.
+	g.Expect(mainChild.Shard.Name).To(Equal(testNewShardClass))
 }
 
 // While the tmp object exists and its deletion window has not started, the
 // main child object must keep the old shard class taken from the tmp
 // object's old-shard annotation.
-func TestNewHTTPProxiesMigrationKeepsOldClassWhileTmpAlive(t *testing.T) {
+func TestDesiredChildrenMigrationKeepsOldClassWhileTmpAlive(t *testing.T) {
 	g := NewWithT(t)
 
 	tmp := &contourv1.HTTPProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "app-0-tmp",
 			Namespace:   "default",
-			Annotations: map[string]string{"old-shard": testOldShardClass},
+			Annotations: map[string]string{OldShardAnnotation: testOldShardClass},
 		},
 	}
-	r := newTestShardedHTTPProxyReconciler(t, newMigratingShardedHTTPProxy(), tmp)
+	e, s := newTestHTTPProxyEngine(t, newMigratingShardedHTTPProxy(), tmp)
 
-	objs, err := r.NewHTTPProxiesFromShardedHTTPProxy()
+	objs, err := e.computeDesired(s)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(objs).To(HaveLen(1))
 
@@ -163,7 +166,7 @@ func TestNewHTTPProxiesMigrationKeepsOldClassWhileTmpAlive(t *testing.T) {
 
 // Once the tmp object's deletion window has started, the main child object
 // must switch to the new shard class.
-func TestNewHTTPProxiesMigrationSwitchesToNewClassAfterWindow(t *testing.T) {
+func TestDesiredChildrenMigrationSwitchesToNewClassAfterWindow(t *testing.T) {
 	g := NewWithT(t)
 
 	tmp := &contourv1.HTTPProxy{
@@ -171,21 +174,21 @@ func TestNewHTTPProxiesMigrationSwitchesToNewClassAfterWindow(t *testing.T) {
 			Name:      "app-0-tmp",
 			Namespace: "default",
 			Annotations: map[string]string{
-				"old-shard":               testOldShardClass,
+				OldShardAnnotation:        testOldShardClass,
 				AutoDeleteAfterAnnotation: time.Now().Add(time.Minute).UTC().Format(time.RFC3339),
 			},
 		},
 	}
-	r := newTestShardedHTTPProxyReconciler(t, newMigratingShardedHTTPProxy(), tmp)
+	e, s := newTestHTTPProxyEngine(t, newMigratingShardedHTTPProxy(), tmp)
 
-	objs, err := r.NewHTTPProxiesFromShardedHTTPProxy()
+	objs, err := e.computeDesired(s)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(objs).To(HaveLen(1))
 
 	mainChild, main := findChild(t, objs, "app-0")
 	g.Expect(main.Spec.IngressClassName).To(Equal(testNewShardClass))
 	g.Expect(main.Labels).To(HaveKeyWithValue(testClassLabel, testNewShardClass))
-	g.Expect(mainChild.ShardName).To(Equal(testNewShardClass))
+	g.Expect(mainChild.Shard.Name).To(Equal(testNewShardClass))
 }
 
 // Mid-migration the live main object must never be scheduled for deletion.
@@ -193,7 +196,7 @@ func TestNewHTTPProxiesMigrationSwitchesToNewClassAfterWindow(t *testing.T) {
 // list, so every reconcile set auto-delete-after on it and the next one wiped
 // the annotation while reconciling the spec — an endless churn in which the
 // migration never completed.
-func TestApplyObjectsMigrationDoesNotChurnAutoDeleteOnMain(t *testing.T) {
+func TestApplyChildrenMigrationDoesNotChurnAutoDeleteOnMain(t *testing.T) {
 	g := NewWithT(t)
 
 	ownerRef := func() []metav1.OwnerReference {
@@ -206,15 +209,13 @@ func TestApplyObjectsMigrationDoesNotChurnAutoDeleteOnMain(t *testing.T) {
 			BlockOwnerDeletion: &yes,
 		}}
 	}
-	// The children carry TypeMeta so that GetChildKind keeps resolving after
-	// the reconciler reuses ChildObject as a Get target.
 	childTypeMeta := metav1.TypeMeta{Kind: "HTTPProxy", APIVersion: contourv1.GroupVersion.String()}
 	tmp := &contourv1.HTTPProxy{
 		TypeMeta: childTypeMeta,
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            "app-0-tmp",
 			Namespace:       "default",
-			Annotations:     map[string]string{"old-shard": testOldShardClass},
+			Annotations:     map[string]string{OldShardAnnotation: testOldShardClass},
 			OwnerReferences: ownerRef(),
 		},
 		Spec: contourv1.HTTPProxySpec{IngressClassName: testOldShardClass},
@@ -229,17 +230,17 @@ func TestApplyObjectsMigrationDoesNotChurnAutoDeleteOnMain(t *testing.T) {
 		},
 		Spec: contourv1.HTTPProxySpec{IngressClassName: testOldShardClass},
 	}
-	r := newTestShardedHTTPProxyReconciler(t, newMigratingShardedHTTPProxy(), tmp, main)
+	e, s := newTestHTTPProxyEngine(t, newMigratingShardedHTTPProxy(), tmp, main)
 
 	var tmpDeleteAfter string
 	for cycle := 1; cycle <= 3; cycle++ {
-		objs, err := r.NewHTTPProxiesFromShardedHTTPProxy()
+		objs, err := e.computeDesired(s)
 		g.Expect(err).NotTo(HaveOccurred())
-		_, err = r.applyObjectsToCluster(objs)
+		_, err = e.applyChildren(s, objs)
 		g.Expect(err).NotTo(HaveOccurred())
 
 		gotMain := &contourv1.HTTPProxy{}
-		g.Expect(r.Client.Get(r.ctx, types.NamespacedName{Namespace: "default", Name: "app-0"}, gotMain)).To(Succeed())
+		g.Expect(e.Client.Get(s.ctx, types.NamespacedName{Namespace: "default", Name: "app-0"}, gotMain)).To(Succeed())
 		g.Expect(gotMain.Annotations).NotTo(HaveKey(AutoDeleteAfterAnnotation),
 			"cycle %d: live main object must not be scheduled for deletion", cycle)
 
@@ -247,7 +248,7 @@ func TestApplyObjectsMigrationDoesNotChurnAutoDeleteOnMain(t *testing.T) {
 		// deadline must be set once rather than rescheduled every cycle. This
 		// also proves the deletion pass really ran.
 		gotTmp := &contourv1.HTTPProxy{}
-		g.Expect(r.Client.Get(r.ctx, types.NamespacedName{Namespace: "default", Name: "app-0-tmp"}, gotTmp)).To(Succeed())
+		g.Expect(e.Client.Get(s.ctx, types.NamespacedName{Namespace: "default", Name: "app-0-tmp"}, gotTmp)).To(Succeed())
 		g.Expect(gotTmp.Annotations).To(HaveKey(AutoDeleteAfterAnnotation), "cycle %d", cycle)
 		if tmpDeleteAfter == "" {
 			tmpDeleteAfter = gotTmp.Annotations[AutoDeleteAfterAnnotation]

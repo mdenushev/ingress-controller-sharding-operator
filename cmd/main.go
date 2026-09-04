@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"os"
-	"sync"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -102,35 +101,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	baseSettings := controller.Settings{
+		TerminationPeriod:                  conf.RateLimit.UpdateCooldown.Object,
+		ShardUpdateCooldown:                conf.RateLimit.UpdateCooldown.Shard,
+		DomainSubstring:                    conf.General.DomainSubstring,
+		MutatingWebhookAnnotation:          conf.General.Annotations.MutatingWebhook,
+		UnregisterAnnotation:               conf.AdditionalServiceDiscovery.Annotations.Unregistering,
+		ServiceDiscoveryClassLabel:         conf.AdditionalServiceDiscovery.Labels.Class,
+		ServiceDiscoveryTagsAnnotation:     conf.AdditionalServiceDiscovery.Annotations.Tags,
+		AppNameLabel:                       conf.AdditionalServiceDiscovery.Labels.AppName,
+		RootHTTPProxyLabel:                 conf.ShardedHTTPProxy.Labels.RootHTTPProxy,
+		VirtualHostsAnnotation:             conf.ShardedHTTPProxy.Annotations.VirtualHosts,
+		AllShardsPlacementAnnotation:       conf.AllShardsPlacement.Annotations.Enabled,
+		AllShardsBaseHosts:                 conf.AllShardsPlacement.ShardBaseDomains,
+		FinalizerKey:                       conf.Finalizer.Key,
+		FinalizerTerminationPeriod:         conf.Finalizer.TerminationPeriod,
+		FinalizerDeletionTerminationPeriod: conf.Finalizer.DeletionTerminationPeriod,
+	}
+
 	if runShardedIngress {
-		shardedIngressReconciler := &controller.ShardedIngressReconciler{
-			ShardedReconciler: controller.ShardedReconciler{
-				Client:                                   mgr.GetClient(),
-				Scheme:                                   mgr.GetScheme(),
-				MaxShards:                                conf.ShardedIngress.Shards,
-				TerminationPeriod:                        &conf.RateLimit.UpdateCooldown.Object,
-				ShardUpdateCooldown:                      &conf.RateLimit.UpdateCooldown.Shard,
-				DomainSubstring:                          &conf.General.DomainSubstring,
-				MutatingWebhookAnnotation:                &conf.General.Annotations.MutatingWebhook,
-				UnregisterAnnotation:                     &conf.AdditionalServiceDiscovery.Annotations.Unregistering,
-				AdditionalServiceDiscoveryClassLabel:     &conf.AdditionalServiceDiscovery.Labels.Class,
-				AdditionalServiceDiscoveryTagsAnnotation: &conf.AdditionalServiceDiscovery.Annotations.Tags,
-				AppNameLabel:                             &conf.AdditionalServiceDiscovery.Labels.AppName,
-				AllShardsPlacementAnnotation:             &conf.AllShardsPlacement.Annotations.Enabled,
-				AllShardsBaseHosts:                       &conf.AllShardsPlacement.ShardBaseDomains,
-				FinalizerKey:                             &conf.Finalizer.Key,
-				FinalizerTerminationPeriod:               &conf.Finalizer.TerminationPeriod,
-				FinalizerDeletionTerminationPeriod:       &conf.Finalizer.DeletionTerminationPeriod,
-				WaitingList:                              make(map[string]bool),
-				ReadyList:                                make(map[string]bool),
-				ManagedList:                              make(map[string]bool),
-				ErrorList:                                make(map[string]bool),
-				ShardedCache:                             &sync.Map{},
-				ChildCache:                               &sync.Map{},
-			},
-			ShardedIngress: &controllerv1.ShardedIngress{},
-			ChildObject:    networkingv1.Ingress{},
-		}
+		settings := baseSettings
+		settings.MaxShards = conf.ShardedIngress.Shards
+		shardedIngressReconciler := controller.NewShardedIngressReconciler(
+			mgr.GetClient(), mgr.GetScheme(), mgr.GetEventRecorderFor("shardedingress-controller"), settings)
 
 		if err := shardedIngressReconciler.SetupWithManager(mgr, 1, conf.RateLimit.ApiRateLimit, conf.RateLimit.ApiBurstLimit); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "ShardedIngress")
@@ -139,36 +132,10 @@ func main() {
 	}
 
 	if runShardedHTTPProxy {
-		shardedHTTPProxyReconciler := &controller.ShardedHTTPProxyReconciler{
-			ShardedReconciler: controller.ShardedReconciler{
-				Client:                                   mgr.GetClient(),
-				Scheme:                                   mgr.GetScheme(),
-				MaxShards:                                conf.ShardedHTTPProxy.Shards,
-				TerminationPeriod:                        &conf.RateLimit.UpdateCooldown.Object,
-				ShardUpdateCooldown:                      &conf.RateLimit.UpdateCooldown.Shard,
-				DomainSubstring:                          &conf.General.DomainSubstring,
-				MutatingWebhookAnnotation:                &conf.General.Annotations.MutatingWebhook,
-				UnregisterAnnotation:                     &conf.AdditionalServiceDiscovery.Annotations.Unregistering,
-				AdditionalServiceDiscoveryClassLabel:     &conf.AdditionalServiceDiscovery.Labels.Class,
-				RootHTTPProxyLabel:                       &conf.ShardedHTTPProxy.Labels.RootHTTPProxy,
-				VirtualHostsHTTPProxyAnnotation:          &conf.ShardedHTTPProxy.Annotations.VirtualHosts,
-				AdditionalServiceDiscoveryTagsAnnotation: &conf.AdditionalServiceDiscovery.Annotations.Tags,
-				AppNameLabel:                             &conf.AdditionalServiceDiscovery.Labels.AppName,
-				AllShardsPlacementAnnotation:             &conf.AllShardsPlacement.Annotations.Enabled,
-				AllShardsBaseHosts:                       &conf.AllShardsPlacement.ShardBaseDomains,
-				FinalizerKey:                             &conf.Finalizer.Key,
-				FinalizerTerminationPeriod:               &conf.Finalizer.TerminationPeriod,
-				FinalizerDeletionTerminationPeriod:       &conf.Finalizer.DeletionTerminationPeriod,
-				WaitingList:                              make(map[string]bool),
-				ReadyList:                                make(map[string]bool),
-				ManagedList:                              make(map[string]bool),
-				ErrorList:                                make(map[string]bool),
-				ShardedCache:                             &sync.Map{},
-				ChildCache:                               &sync.Map{},
-			},
-			ShardedHTTPProxy: &controllerv1.ShardedHTTPProxy{},
-			ChildObject:      contourv1.HTTPProxy{},
-		}
+		settings := baseSettings
+		settings.MaxShards = conf.ShardedHTTPProxy.Shards
+		shardedHTTPProxyReconciler := controller.NewShardedHTTPProxyReconciler(
+			mgr.GetClient(), mgr.GetScheme(), mgr.GetEventRecorderFor("shardedhttpproxy-controller"), settings)
 
 		if err := shardedHTTPProxyReconciler.SetupWithManager(mgr, 1, conf.RateLimit.ApiRateLimit, conf.RateLimit.ApiBurstLimit); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "ShardedHTTPProxy")
