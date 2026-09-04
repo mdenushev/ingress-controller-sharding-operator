@@ -26,6 +26,8 @@ type ShardedIngressSpec struct {
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Class",type="string",JSONPath=".spec.template.spec.ingressClassName",description="Class of the Ingress resource"
+// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Lifecycle phase of the sharded object"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status",description="Ready condition"
 
 // ShardedIngress is the Schema for the shardedingresses API
 type ShardedIngress struct {
@@ -59,6 +61,10 @@ func (s *ShardedIngress) SetCreatedObjects(new map[string][]map[string]string) {
 
 func (s *ShardedIngress) GetObject() client.Object {
 	return s
+}
+
+func (s *ShardedIngress) GetShardedStatus() *ShardedStatus {
+	return &s.Status
 }
 
 func (s *ShardedIngress) GetIngressClassName() string {
