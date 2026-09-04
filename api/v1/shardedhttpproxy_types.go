@@ -22,17 +22,58 @@ type ShardedHTTPProxySpec struct {
 	Template HTTPProxyTemplateSpec `json:"template,omitempty"`
 }
 
-// ShardedHTTPProxyStatus defines the observed state of ShardedHTTPProxy
+// ShardedPhase describes the current lifecycle phase of a sharded object.
+// +kubebuilder:validation:Enum=Pending;Provisioning;Resharding;Ready;Terminating
+type ShardedPhase string
+
+const (
+	// PhasePending means the object has been observed but no children exist yet.
+	PhasePending ShardedPhase = "Pending"
+	// PhaseProvisioning means children are being created or updated on their current shard.
+	PhaseProvisioning ShardedPhase = "Provisioning"
+	// PhaseResharding means children are being migrated to a different shard:
+	// a tmp child keeps serving the old shard while the main child moves.
+	PhaseResharding ShardedPhase = "Resharding"
+	// PhaseReady means all children match the desired state.
+	PhaseReady ShardedPhase = "Ready"
+	// PhaseTerminating means the object is being deleted and children are drained.
+	PhaseTerminating ShardedPhase = "Terminating"
+)
+
+// Condition types reported on sharded objects.
+const (
+	// ConditionReady is True when all children match the desired state.
+	ConditionReady = "Ready"
+	// ConditionResharding is True while a shard migration is in progress.
+	ConditionResharding = "Resharding"
+)
+
+// ShardedStatus defines the observed state of sharded objects
 type ShardedStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// CreatedObjects maps a shard name to the child objects created on it.
 	// +kubebuilder:default:={}
 	CreatedObjects map[string][]map[string]string `json:"createdObjects"`
+
+	// Phase is the current lifecycle phase of the object.
+	// +optional
+	Phase ShardedPhase `json:"phase,omitempty"`
+
+	// ObservedGeneration is the generation most recently reconciled.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Conditions describe the current reconciliation state.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Class",type="string",JSONPath=".spec.template.spec.ingressClassName",description="Class of the Ingress resource"
+// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Lifecycle phase of the sharded object"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status",description="Ready condition"
 
 // ShardedHTTPProxy is the Schema for the shardedhttpproxies API
 type ShardedHTTPProxy struct {
@@ -66,6 +107,10 @@ func (s *ShardedHTTPProxy) SetCreatedObjects(new map[string][]map[string]string)
 
 func (s *ShardedHTTPProxy) GetObject() client.Object {
 	return s
+}
+
+func (s *ShardedHTTPProxy) GetShardedStatus() *ShardedStatus {
+	return &s.Status
 }
 
 func (s *ShardedHTTPProxy) GetIngressClassName() string {
