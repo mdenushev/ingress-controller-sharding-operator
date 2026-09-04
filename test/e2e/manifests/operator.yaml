@@ -1,0 +1,121 @@
+# Self-contained e2e deployment of the operator. The ClusterRole is applied
+# separately from config/rbac/role.yaml so e2e always runs with the exact
+# RBAC that ships with the operator.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sharding-e2e-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sharding-e2e-controller
+  namespace: sharding-e2e-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sharding-e2e-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: manager-role
+subjects:
+  - kind: ServiceAccount
+    name: sharding-e2e-controller
+    namespace: sharding-e2e-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sharding-e2e-config
+  namespace: sharding-e2e-system
+data:
+  config.yaml: |
+    shardedIngress:
+      shards:
+        e2e-a: 1
+        e2e-b: 1
+    rateLimit:
+      updateCooldown:
+        object: 5s
+        shard: 1s
+      apiRateLimit: 50
+      apiBurstLimit: 200
+    finalizer:
+      key: k8s.tochka.com/sharded-controller-finalizer
+      terminationPeriod: 10s
+      deletionTerminationPeriod: 5s
+    general:
+      domainSubstring: "cluster.local"
+      annotations:
+        mutatingWebhook: "k8s.tochka.com/mutate-hosts"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sharding-e2e-controller
+  namespace: sharding-e2e-system
+  labels:
+    app: sharding-e2e-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sharding-e2e-controller
+  template:
+    metadata:
+      labels:
+        app: sharding-e2e-controller
+    spec:
+      serviceAccountName: sharding-e2e-controller
+      containers:
+        - name: manager
+          image: sharding-operator:e2e
+          imagePullPolicy: IfNotPresent
+          args:
+            - --sharded-ingress
+            - --config=/etc/sharded/config.yaml
+          volumeMounts:
+            - name: config
+              mountPath: /etc/sharded
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
+      volumes:
+        - name: config
+          configMap:
+            name: sharding-e2e-config
+---
+# Shard ingress classes the operator discovers at start-up. Without them the
+# configured classes collapse to 0 shards (regular mode).
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: e2e-a-0
+spec:
+  controller: example.com/ingress-controller
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: e2e-b-0
+spec:
+  controller: example.com/ingress-controller
