@@ -1,0 +1,54 @@
+name: "e2e tests"
+
+on:
+  pull_request: {}
+  push:
+    branches:
+      - 'main'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+
+  e2e-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The image is built locally and loaded straight into kind, so the
+      # job needs no registry credentials and works in forks.
+      - name: Build operator image
+        run: docker build -t sharding-operator:e2e .
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: sharding-e2e
+
+      - name: Load operator image into kind
+        run: kind load docker-image sharding-operator:e2e --name sharding-e2e
+
+      - name: Install CRDs and deploy the operator
+        run: |
+          kubectl apply -f config/crd/bases
+          kubectl apply -f config/rbac/role.yaml
+          kubectl apply -f test/e2e/manifests/operator.yaml
+          kubectl -n sharding-e2e-system rollout status deploy/sharding-e2e-controller --timeout=180s
+
+      - name: Run e2e tests
+        run: make test-e2e
+
+      - name: Operator logs
+        if: failure()
+        run: |
+          kubectl -n sharding-e2e-system describe deploy/sharding-e2e-controller || true
+          kubectl -n sharding-e2e-system logs deploy/sharding-e2e-controller --tail=1000 || true
