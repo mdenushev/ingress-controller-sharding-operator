@@ -1,4 +1,4 @@
-package controller
+package engine
 
 import (
 	"fmt"
@@ -6,6 +6,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"k8s.tochka.com/sharded-ingress-controller/internal/status"
 )
 
 // computeDesired resolves the migration context of every shard and renders
@@ -13,10 +15,7 @@ import (
 func (e *Engine[C]) computeDesired(s *scope) ([]DesiredChild[C], error) {
 	var all []DesiredChild[C]
 	for _, shard := range s.shards {
-		plan, err := e.resolveShardPlan(s, shard)
-		if err != nil {
-			return nil, err
-		}
+		plan := e.resolveShardPlan(s, shard)
 
 		if plan.OldShard != "" && plan.OldShard != shard.Name {
 			s.resharding = true
@@ -24,7 +23,7 @@ func (e *Engine[C]) computeDesired(s *scope) ([]DesiredChild[C], error) {
 		if plan.CreateTmp {
 			e.eventf(
 				s,
-				EventReshardingStarted,
+				status.EventReshardingStarted,
 				"Resharding from %s to %s: creating tmp child to keep the old shard serving",
 				plan.OldShard,
 				shard.Name,
@@ -43,7 +42,7 @@ func (e *Engine[C]) computeDesired(s *scope) ([]DesiredChild[C], error) {
 // resolveShardPlan detects whether the shard is mid-migration by combining
 // the recorded status with the live tmp child, and decides which ingress
 // class the children must carry right now.
-func (e *Engine[C]) resolveShardPlan(s *scope, shard Shard) (ShardPlan, error) {
+func (e *Engine[C]) resolveShardPlan(s *scope, shard Shard) ShardPlan {
 	plan := ShardPlan{
 		Shard:          shard,
 		EffectiveClass: shard.Name,
@@ -58,7 +57,7 @@ func (e *Engine[C]) resolveShardPlan(s *scope, shard Shard) (ShardPlan, error) {
 	tmp := e.Adapter.NewObject()
 	err := e.Get(
 		s.ctx,
-		types.NamespacedName{Name: tmpChildName(s.obj.GetName(), shard.Number), Namespace: s.obj.GetNamespace()},
+		types.NamespacedName{Name: TmpChildName(s.obj.GetName(), shard.Number), Namespace: s.obj.GetNamespace()},
 		tmp,
 	)
 	switch {
@@ -84,10 +83,10 @@ func (e *Engine[C]) resolveShardPlan(s *scope, shard Shard) (ShardPlan, error) {
 			"objectKind",
 			e.Adapter.Kind(),
 			"objectName",
-			tmpChildName(s.obj.GetName(), shard.Number),
+			TmpChildName(s.obj.GetName(), shard.Number),
 		)
 	}
-	return plan, nil
+	return plan
 }
 
 // applyChildren brings the cluster to the desired set: it creates missing

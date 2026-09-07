@@ -1,4 +1,4 @@
-package controller
+package engine
 
 import (
 	"time"
@@ -9,6 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"k8s.tochka.com/sharded-ingress-controller/internal/metrics"
+	"k8s.tochka.com/sharded-ingress-controller/internal/status"
 )
 
 func (e *Engine[C]) pruneChildren(s *scope, currentList map[string][]map[string]string) (ctrl.Result, error) {
@@ -53,7 +54,7 @@ func (e *Engine[C]) pruneChild(
 	keep := false
 	var shardName string
 	for _, shard := range s.shards {
-		if findInStatus(shard.Name, obj.GetKind(), obj.GetName(), &currentList) {
+		if status.FindIn(shard.Name, obj.GetKind(), obj.GetName(), currentList) {
 			keep = true
 			shardName = shard.Name
 			break
@@ -67,7 +68,7 @@ func (e *Engine[C]) pruneChild(
 
 	for shard, objStatusSlice := range s.obj.GetShardedStatus().CreatedObjects {
 		for _, objStatus := range objStatusSlice {
-			if objStatus[statusKeyName] == obj.GetName() {
+			if objStatus[status.KeyName] == obj.GetName() {
 				shardName = shard
 			}
 		}
@@ -83,7 +84,7 @@ func (e *Engine[C]) pruneChild(
 			return ctrl.Result{}, false, deleteErr
 		}
 		logger.Info("successfully deleted from cluster", "objectKind", obj.GetKind(), "objectName", obj.GetName())
-		e.eventf(s, EventChildDeleted, "Deleted %s %s", obj.GetKind(), obj.GetName())
+		e.eventf(s, status.EventChildDeleted, "Deleted %s %s", obj.GetKind(), obj.GetName())
 		metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
 		s.mutated = true
 		return ctrl.Result{}, true, nil
@@ -103,28 +104,28 @@ func (e *Engine[C]) dropStaleStatusRecords(s *scope, currentList map[string][]ma
 
 	for shard, objStatusSlice := range s.obj.GetShardedStatus().CreatedObjects {
 		for _, objStatus := range objStatusSlice {
-			if findInStatus(shard, objStatus[statusKeyKind], objStatus[statusKeyName], &currentList) {
+			if status.FindIn(shard, objStatus[status.KeyKind], objStatus[status.KeyName], currentList) {
 				continue
 			}
 			obj := &unstructured.Unstructured{}
-			obj.SetKind(objStatus[statusKeyKind])
+			obj.SetKind(objStatus[status.KeyKind])
 			obj.SetAPIVersion(s.obj.GetObject().GetObjectKind().GroupVersionKind().Version)
 			obj.SetNamespace(s.obj.GetNamespace())
-			obj.SetName(objStatus[statusKeyName])
+			obj.SetName(objStatus[status.KeyName])
 			if getErr := e.Get(
 				s.ctx,
 				client.ObjectKey{Namespace: obj.GetNamespace(), Name: obj.GetName()},
 				obj,
 			); getErr != nil {
 				// If it does not exist, delete the object from the status.
-				if removeErr := e.removeChildFromStatus(s, objStatus[statusKeyName]); removeErr != nil {
+				if removeErr := e.removeChildFromStatus(s, objStatus[status.KeyName]); removeErr != nil {
 					logger.Error(
 						removeErr,
 						"unable to update status",
 						"objectKind",
 						s.obj.GetKind(),
 						"objectName",
-						objStatus[statusKeyName],
+						objStatus[status.KeyName],
 					)
 					return removeErr
 				}
@@ -190,7 +191,7 @@ func (e *Engine[C]) evaluateDeletionTiming(
 			logger.Info("marked-for-deletion annotation set", "objectKind", obj.GetKind(), "objectName", obj.GetName())
 			e.eventf(
 				s,
-				EventMarkedForDeletion,
+				status.EventMarkedForDeletion,
 				"Marked %s %s for service discovery unregistering",
 				obj.GetKind(),
 				obj.GetName(),
@@ -225,7 +226,7 @@ func (e *Engine[C]) evaluateDeletionTiming(
 	)
 	e.eventf(
 		s,
-		EventDeletionScheduled,
+		status.EventDeletionScheduled,
 		"Scheduled %s %s for deletion at %s",
 		obj.GetKind(),
 		obj.GetName(),

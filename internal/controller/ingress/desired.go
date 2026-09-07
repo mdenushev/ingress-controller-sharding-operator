@@ -1,4 +1,4 @@
-package controller
+package ingress
 
 import (
 	"fmt"
@@ -7,28 +7,29 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
+	"k8s.tochka.com/sharded-ingress-controller/internal/engine"
 )
 
-// ingressRenderer renders the desired Ingress children of a ShardedIngress
-// for one shard.
-type ingressRenderer struct {
-	settings Settings
+// renderer renders the desired Ingress children of a ShardedIngress for one
+// shard.
+type renderer struct {
+	settings engine.Settings
 }
 
-func newIngressRenderer(settings Settings) *ingressRenderer {
-	return &ingressRenderer{settings: settings}
+func newRenderer(settings engine.Settings) *renderer {
+	return &renderer{settings: settings}
 }
 
-func (b *ingressRenderer) RenderChildren(
-	sharded ShardedObject,
-	plan ShardPlan,
-) ([]DesiredChild[*networkingv1.Ingress], error) {
+func (b *renderer) RenderChildren(
+	sharded engine.ShardedObject,
+	plan engine.ShardPlan,
+) ([]engine.DesiredChild[*networkingv1.Ingress], error) {
 	src, ok := sharded.(*controllerv1.ShardedIngress)
 	if !ok {
 		return nil, fmt.Errorf("unsupported sharded object type: %T", sharded)
 	}
 
-	var children []DesiredChild[*networkingv1.Ingress]
+	var children []engine.DesiredChild[*networkingv1.Ingress]
 
 	shardedIngress := src.DeepCopy()
 	if shardedIngress.Spec.Template.Labels == nil {
@@ -38,16 +39,16 @@ func (b *ingressRenderer) RenderChildren(
 		shardedIngress.Spec.Template.Annotations = make(map[string]string)
 	}
 
-	tmpName := tmpChildName(shardedIngress.Name, plan.Shard.Number)
+	tmpName := engine.TmpChildName(shardedIngress.Name, plan.Shard.Number)
 
 	// While migrating, a tmp child pinned to the old shard keeps serving
 	// traffic until service discovery converges on the new shard.
 	if plan.CreateTmp {
 		tempShardedIngress := shardedIngress.DeepCopy()
 		tempShardedIngress.Spec.Template.Labels[b.settings.ServiceDiscoveryClassLabel] = plan.OldShard
-		tempShardedIngress.Spec.Template.Annotations[OldShardAnnotation] = plan.OldShard
+		tempShardedIngress.Spec.Template.Annotations[engine.OldShardAnnotation] = plan.OldShard
 		tmpIngress := renderIngress(tempShardedIngress, tmpName, plan.OldShard)
-		children = append(children, DesiredChild[*networkingv1.Ingress]{Shard: plan.Shard, Obj: tmpIngress})
+		children = append(children, engine.DesiredChild[*networkingv1.Ingress]{Shard: plan.Shard, Obj: tmpIngress})
 	}
 
 	shardedIngress.Spec.Template.Labels[b.settings.ServiceDiscoveryClassLabel] = plan.EffectiveClass
@@ -76,7 +77,7 @@ func (b *ingressRenderer) RenderChildren(
 		mainName = fmt.Sprintf("%s-%d", shardedIngress.Name, plan.Shard.Number)
 	}
 
-	main := DesiredChild[*networkingv1.Ingress]{
+	main := engine.DesiredChild[*networkingv1.Ingress]{
 		Shard: plan.Shard,
 		Obj:   renderIngress(shardedIngress, mainName, plan.EffectiveClass),
 	}

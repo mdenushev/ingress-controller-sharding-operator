@@ -1,4 +1,4 @@
-package controller
+package engine
 
 import (
 	"golang.org/x/time/rate"
@@ -8,10 +8,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 )
 
-// setupWithManager wires an engine into the manager with the shared
+// SetupWithManager wires an engine into the manager with the shared
 // rate-limiter options: exponential backoff per object plus a global API
 // token bucket.
-func setupWithManager[C client.Object](
+func SetupWithManager[C client.Object](
 	mgr ctrl.Manager,
 	e *Engine[C],
 	parent client.Object,

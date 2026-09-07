@@ -1,4 +1,4 @@
-package controller
+package ingress
 
 import (
 	"slices"
@@ -7,32 +7,34 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"k8s.tochka.com/sharded-ingress-controller/internal/engine"
 )
 
 // serverAliasAnnotation is the nginx annotation the cluster's mutating
 // webhook manages on the children.
 const serverAliasAnnotation = "nginx.ingress.kubernetes.io/server-alias"
 
-// ingressAdapter adapts networking/v1 Ingress children to the engine.
-type ingressAdapter struct {
+// adapter adapts networking/v1 Ingress children to the engine.
+type adapter struct {
 	domainSubstring           string
 	mutatingWebhookAnnotation string
 }
 
-func newIngressAdapter(settings Settings) *ingressAdapter {
-	return &ingressAdapter{
+func newAdapter(settings engine.Settings) *adapter {
+	return &adapter{
 		domainSubstring:           settings.DomainSubstring,
 		mutatingWebhookAnnotation: settings.MutatingWebhookAnnotation,
 	}
 }
 
-func (a *ingressAdapter) Kind() string { return "Ingress" }
+func (a *adapter) Kind() string { return "Ingress" }
 
-func (a *ingressAdapter) ListGVK() schema.GroupVersionKind {
+func (a *adapter) ListGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: "networking.k8s.io", Version: "v1", Kind: "IngressList"}
 }
 
-func (a *ingressAdapter) NewObject() *networkingv1.Ingress {
+func (a *adapter) NewObject() *networkingv1.Ingress {
 	return &networkingv1.Ingress{}
 }
 
@@ -41,7 +43,7 @@ func (a *ingressAdapter) NewObject() *networkingv1.Ingress {
 // annotation and TLS hosts outside the main domain) are treated as equal as
 // long as the desired values are a subset of the existing ones — otherwise
 // every reconcile would fight the webhook.
-func (a *ingressAdapter) Equal(existing, desired *networkingv1.Ingress) (bool, error) {
+func (a *adapter) Equal(existing, desired *networkingv1.Ingress) (bool, error) {
 	if a.webhookManagesHosts(desired) {
 		alignServerAlias(existing, desired)
 		// No need to update the TLS block if the desired hosts are
@@ -59,7 +61,7 @@ func (a *ingressAdapter) Equal(existing, desired *networkingv1.Ingress) (bool, e
 
 // webhookManagesHosts reports whether the mutating webhook rewrites the hosts
 // of the desired Ingress.
-func (a *ingressAdapter) webhookManagesHosts(desired *networkingv1.Ingress) bool {
+func (a *adapter) webhookManagesHosts(desired *networkingv1.Ingress) bool {
 	mutateHostsValue, exists := desired.Annotations[a.mutatingWebhookAnnotation]
 	return exists && mutateHostsValue != "" && mutateHostsValue != "false"
 }
@@ -93,7 +95,7 @@ func alignServerAlias(existing, desired *networkingv1.Ingress) {
 // desiredTLSSubsetOfExisting reports whether every desired TLS host already
 // exists in the existing TLS block and no webhook-added host (one outside the
 // main domain) would be removed by applying the desired block.
-func (a *ingressAdapter) desiredTLSSubsetOfExisting(existing, desired *networkingv1.Ingress) bool {
+func (a *adapter) desiredTLSSubsetOfExisting(existing, desired *networkingv1.Ingress) bool {
 	newTLS := desired.Spec.TLS
 	oldTLS := existing.Spec.TLS
 
@@ -121,7 +123,7 @@ func (a *ingressAdapter) desiredTLSSubsetOfExisting(existing, desired *networkin
 
 // Merge copies the desired spec and metadata onto the existing Ingress so the
 // update keeps resourceVersion and server-populated fields.
-func (a *ingressAdapter) Merge(existing, desired *networkingv1.Ingress) *networkingv1.Ingress {
+func (a *adapter) Merge(existing, desired *networkingv1.Ingress) *networkingv1.Ingress {
 	existing.Spec = desired.Spec
 	existing.Annotations = desired.Annotations
 	existing.Labels = desired.Labels

@@ -1,4 +1,4 @@
-package controller
+package engine
 
 import (
 	"context"
@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
+	"k8s.tochka.com/sharded-ingress-controller/internal/status"
 )
 
 //+kubebuilder:rbac:groups=networking.k8s.tochka.com,resources=shardedingresses,verbs=get;list;watch;create;update;patch;delete
@@ -150,7 +151,7 @@ func (e *Engine[C]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resul
 	s.shards, s.regular, err = e.Selector.ShardsFor(s.obj, s.useAllShards)
 	if err != nil {
 		logger.Error(err, "Unable to use shard")
-		e.warnf(s, EventShardSelectionFailed, "Unable to pick a shard: %v", err)
+		e.warnf(s, status.EventShardSelectionFailed, "Unable to pick a shard: %v", err)
 		return ctrl.Result{}, err
 	}
 
@@ -163,7 +164,7 @@ func (e *Engine[C]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resul
 	desired, err := e.computeDesired(s)
 	if err != nil {
 		logger.Error(err, "children object can't be generated")
-		e.warnf(s, EventChildBuildFailed, "Unable to render children: %v", err)
+		e.warnf(s, status.EventChildBuildFailed, "Unable to render children: %v", err)
 		return ctrl.Result{}, err
 	}
 
@@ -171,10 +172,10 @@ func (e *Engine[C]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resul
 
 	// Compare with current and fix: create/update children, then prune the
 	// ones no longer desired.
-	result, err := e.applyChildren(s, desired)
+	result := e.applyChildren(s, desired)
 
 	e.publishLifecycle(s, result)
-	return result, err
+	return result, nil
 }
 
 // ensureFinalizer sets the controller finalizer on a live parent that does
@@ -202,12 +203,17 @@ func (e *Engine[C]) scheduleApply(s *scope, logger logr.Logger) (ctrl.Result, bo
 		return ctrl.Result{}, false
 	}
 	if result.RequeueAfter > time.Second {
-		e.eventf(s, EventApplyScheduled, "Apply on shard scheduled in %s", result.RequeueAfter.Round(time.Second))
+		e.eventf(
+			s,
+			status.EventApplyScheduled,
+			"Apply on shard scheduled in %s",
+			result.RequeueAfter.Round(time.Second),
+		)
 	}
 	if s.obj.GetShardedStatus().Phase == "" {
 		_ = e.setLifecycle(s, controllerv1.PhasePending,
-			condition(controllerv1.ConditionReady, false, "Pending", "Waiting for the first apply slot"),
-			condition(controllerv1.ConditionResharding, false, "NoMigration", "No shard migration in progress"))
+			status.Condition(controllerv1.ConditionReady, false, "Pending", "Waiting for the first apply slot"),
+			status.Condition(controllerv1.ConditionResharding, false, "NoMigration", "No shard migration in progress"))
 	}
 	return result, true
 }

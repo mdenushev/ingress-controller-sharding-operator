@@ -1,4 +1,4 @@
-package controller
+package engine
 
 import (
 	"fmt"
@@ -11,10 +11,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"k8s.tochka.com/sharded-ingress-controller/internal/metrics"
+	"k8s.tochka.com/sharded-ingress-controller/internal/status"
 )
 
 // one change at a time.
-func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) (ctrl.Result, error) {
+func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) ctrl.Result {
 	logger := log.FromContext(s.ctx)
 	statusList := make(map[string][]map[string]string)
 
@@ -42,8 +43,7 @@ func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) (ctrl.Res
 		)
 		switch {
 		case apierrors.IsNotFound(err):
-			result, createErr := e.createChild(s, current)
-			if createErr != nil {
+			if createErr := e.createChild(s, current); createErr != nil {
 				logger.Error(
 					createErr,
 					"unable to create",
@@ -53,7 +53,7 @@ func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) (ctrl.Res
 					current.Obj.GetName(),
 				)
 			}
-			return result, nil
+			return ctrl.Result{}
 		case err != nil:
 			logger.Error(err, "unable to get", "objectKind", e.Adapter.Kind(), "objectName", current.Obj.GetName())
 		default:
@@ -71,12 +71,12 @@ func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) (ctrl.Res
 
 		statusList[current.Shard.Name] = append(
 			statusList[current.Shard.Name],
-			map[string]string{statusKeyKind: e.Adapter.Kind(), statusKeyName: current.Obj.GetName()},
+			map[string]string{status.KeyKind: e.Adapter.Kind(), status.KeyName: current.Obj.GetName()},
 		)
 		for _, name := range current.AlsoBook {
 			statusList[current.Shard.Name] = append(
 				statusList[current.Shard.Name],
-				map[string]string{statusKeyKind: e.Adapter.Kind(), statusKeyName: name},
+				map[string]string{status.KeyKind: e.Adapter.Kind(), status.KeyName: name},
 			)
 		}
 	}
@@ -85,10 +85,10 @@ func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) (ctrl.Res
 	if err != nil {
 		logger.Error(err, "unable to delete unlisted objects")
 	}
-	return result, nil
+	return result
 }
 
-func (e *Engine[C]) createChild(s *scope, child DesiredChild[C]) (ctrl.Result, error) {
+func (e *Engine[C]) createChild(s *scope, child DesiredChild[C]) error {
 	logger := log.FromContext(s.ctx)
 	kind := e.Adapter.Kind()
 	name := child.Obj.GetName()
@@ -96,8 +96,8 @@ func (e *Engine[C]) createChild(s *scope, child DesiredChild[C]) (ctrl.Result, e
 	if err := e.Create(s.ctx, child.Obj); err != nil {
 		logger.Error(err, "unable to create", "objectKind", kind, "objectName", name)
 		e.tracker.markErrored(s.key)
-		e.warnf(s, EventChildApplyFailed, "Unable to create %s %s: %v", kind, name, err)
-		return ctrl.Result{}, err
+		e.warnf(s, status.EventChildApplyFailed, "Unable to create %s %s: %v", kind, name, err)
+		return err
 	}
 
 	logger.Info("successfully created", "objectKind", kind, "objectName", name)
@@ -105,21 +105,21 @@ func (e *Engine[C]) createChild(s *scope, child DesiredChild[C]) (ctrl.Result, e
 	if isTmpChildName(s.obj.GetName(), name) {
 		e.eventf(
 			s,
-			EventTmpChildCreated,
+			status.EventTmpChildCreated,
 			"Created tmp %s %s to keep the old shard serving during migration",
 			kind,
 			name,
 		)
 	} else {
-		e.eventf(s, EventChildCreated, "Created %s %s on shard %s", kind, name, child.Shard.Name)
+		e.eventf(s, status.EventChildCreated, "Created %s %s on shard %s", kind, name, child.Shard.Name)
 	}
 	if err := e.addChildToStatus(s, kind, name, child.Shard.Name); err != nil {
-		return ctrl.Result{}, err
+		return err
 	}
 	e.tracker.doneWaiting(s.key)
 	metrics.ProcessingCounter.WithLabelValues(e.CtrlName, child.Shard.Name).Inc()
 	s.mutated = true
-	return ctrl.Result{}, nil
+	return nil
 }
 
 func (e *Engine[C]) updateChild(s *scope, existing C, child DesiredChild[C]) error {
@@ -145,12 +145,12 @@ func (e *Engine[C]) updateChild(s *scope, existing C, child DesiredChild[C]) err
 	if updateErr := e.Update(s.ctx, merged); updateErr != nil {
 		logger.Error(updateErr, "unable to update", "objectKind", kind, "objectName", name)
 		e.tracker.markErrored(s.key)
-		e.warnf(s, EventChildApplyFailed, "Unable to update %s %s: %v", kind, name, updateErr)
+		e.warnf(s, status.EventChildApplyFailed, "Unable to update %s %s: %v", kind, name, updateErr)
 		return updateErr
 	}
 	logger.Info("successfully updated", "objectKind", kind, "objectName", name)
 	e.tracker.markReady(s.key)
-	e.eventf(s, EventChildUpdated, "Updated %s %s on shard %s", kind, name, child.Shard.Name)
+	e.eventf(s, status.EventChildUpdated, "Updated %s %s on shard %s", kind, name, child.Shard.Name)
 	if statusErr := e.addChildToStatus(s, kind, name, child.Shard.Name); statusErr != nil {
 		return statusErr
 	}

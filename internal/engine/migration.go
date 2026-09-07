@@ -1,4 +1,4 @@
-package controller
+package engine
 
 import (
 	"fmt"
@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
+	"k8s.tochka.com/sharded-ingress-controller/internal/status"
 )
 
 // Resharding moves the children of a parent from one shard to another without
@@ -50,9 +51,9 @@ const (
 	oldShardHoldWindows = 2
 )
 
-// tmpChildName is the name of the tmp child that keeps the old shard alive
+// TmpChildName is the name of the tmp child that keeps the old shard alive
 // during a migration of child number shardNumber.
-func tmpChildName(parentName string, shardNumber int) string {
+func TmpChildName(parentName string, shardNumber int) string {
 	return fmt.Sprintf("%s-%d-%s", parentName, shardNumber, tmpNameSuffix)
 }
 
@@ -65,11 +66,11 @@ func isTmpChildName(parentName, objName string) bool {
 // reshardingConflict returns the shard the child is recorded on when it
 // differs from newShard, i.e. when a migration is needed. It returns "" when
 // the child is already recorded on newShard or not recorded at all.
-func reshardingConflict(status *controllerv1.ShardedStatus, newShard, childName string) string {
+func reshardingConflict(st *controllerv1.ShardedStatus, newShard, childName string) string {
 	oldShard := ""
-	for shard, objs := range status.CreatedObjects {
+	for shard, objs := range st.CreatedObjects {
 		for _, obj := range objs {
-			if obj["name"] != childName {
+			if obj[status.KeyName] != childName {
 				continue
 			}
 			if shard == newShard {

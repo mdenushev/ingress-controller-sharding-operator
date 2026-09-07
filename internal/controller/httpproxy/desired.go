@@ -1,4 +1,4 @@
-package controller
+package httpproxy
 
 import (
 	"fmt"
@@ -8,29 +8,33 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
+	"k8s.tochka.com/sharded-ingress-controller/internal/engine"
 )
 
-// httpProxyRenderer renders the desired HTTPProxy children of a
-// ShardedHTTPProxy for one shard: a root proxy plus one proxy per extra
-// virtual host, each including the root.
-type httpProxyRenderer struct {
-	settings Settings
+// trueValue is the value of the root-proxy marker label.
+const trueValue = "true"
+
+// renderer renders the desired HTTPProxy children of a ShardedHTTPProxy for
+// one shard: a root proxy plus one proxy per extra virtual host, each
+// including the root.
+type renderer struct {
+	settings engine.Settings
 }
 
-func newHTTPProxyRenderer(settings Settings) *httpProxyRenderer {
-	return &httpProxyRenderer{settings: settings}
+func newRenderer(settings engine.Settings) *renderer {
+	return &renderer{settings: settings}
 }
 
-func (b *httpProxyRenderer) RenderChildren(
-	sharded ShardedObject,
-	plan ShardPlan,
-) ([]DesiredChild[*contourv1.HTTPProxy], error) {
+func (b *renderer) RenderChildren(
+	sharded engine.ShardedObject,
+	plan engine.ShardPlan,
+) ([]engine.DesiredChild[*contourv1.HTTPProxy], error) {
 	src, ok := sharded.(*controllerv1.ShardedHTTPProxy)
 	if !ok {
 		return nil, fmt.Errorf("unsupported sharded object type: %T", sharded)
 	}
 
-	var children []DesiredChild[*contourv1.HTTPProxy]
+	var children []engine.DesiredChild[*contourv1.HTTPProxy]
 
 	shardedHTTPProxy := src.DeepCopy()
 	if shardedHTTPProxy.Spec.Template.Labels == nil {
@@ -40,7 +44,7 @@ func (b *httpProxyRenderer) RenderChildren(
 		shardedHTTPProxy.Spec.Template.Annotations = make(map[string]string)
 	}
 
-	tmpName := tmpChildName(shardedHTTPProxy.Name, plan.Shard.Number)
+	tmpName := engine.TmpChildName(shardedHTTPProxy.Name, plan.Shard.Number)
 
 	// While migrating, tmp children pinned to the old shard keep serving
 	// traffic until service discovery converges on the new shard.
@@ -48,11 +52,11 @@ func (b *httpProxyRenderer) RenderChildren(
 		tempShardedHTTPProxy := shardedHTTPProxy.DeepCopy()
 		tempShardedHTTPProxy.SetName(tmpName)
 		tempShardedHTTPProxy.Spec.Template.Labels[b.settings.ServiceDiscoveryClassLabel] = plan.OldShard
-		tempShardedHTTPProxy.Spec.Template.Annotations[OldShardAnnotation] = plan.OldShard
+		tempShardedHTTPProxy.Spec.Template.Annotations[engine.OldShardAnnotation] = plan.OldShard
 
 		tmpProxy := b.renderHTTPProxy(tempShardedHTTPProxy, tmpName, plan.OldShard, nil)
 		tmpProxy.Labels[b.settings.RootHTTPProxyLabel] = trueValue
-		children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: tmpProxy})
+		children = append(children, engine.DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: tmpProxy})
 
 		for i, host := range b.virtualHosts(tempShardedHTTPProxy) {
 			virtualHost := newVirtualHostFromTemplate(tempShardedHTTPProxy.Spec.Template.Spec.VirtualHost, host)
@@ -62,7 +66,7 @@ func (b *httpProxyRenderer) RenderChildren(
 				plan.OldShard,
 				virtualHost,
 			)
-			children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: httpProxy})
+			children = append(children, engine.DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: httpProxy})
 		}
 	}
 
@@ -76,7 +80,7 @@ func (b *httpProxyRenderer) RenderChildren(
 
 	baseHTTPProxy := b.renderHTTPProxy(shardedHTTPProxy, mainName, plan.EffectiveClass, nil)
 	baseHTTPProxy.Labels[b.settings.RootHTTPProxyLabel] = trueValue
-	children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: baseHTTPProxy})
+	children = append(children, engine.DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: baseHTTPProxy})
 
 	for i, host := range b.virtualHosts(shardedHTTPProxy) {
 		virtualHost := newVirtualHostFromTemplate(shardedHTTPProxy.Spec.Template.Spec.VirtualHost, host)
@@ -86,7 +90,7 @@ func (b *httpProxyRenderer) RenderChildren(
 			plan.EffectiveClass,
 			virtualHost,
 		)
-		children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: httpProxy})
+		children = append(children, engine.DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: httpProxy})
 	}
 
 	return children, nil
@@ -94,7 +98,7 @@ func (b *httpProxyRenderer) RenderChildren(
 
 // virtualHosts lists the extra hosts requested via the virtual-hosts
 // annotation on the parent.
-func (b *httpProxyRenderer) virtualHosts(shardedHTTPProxy *controllerv1.ShardedHTTPProxy) []string {
+func (b *renderer) virtualHosts(shardedHTTPProxy *controllerv1.ShardedHTTPProxy) []string {
 	serverAlias, exists := shardedHTTPProxy.Annotations[b.settings.VirtualHostsAnnotation]
 	if !exists || serverAlias == "" {
 		return nil
@@ -113,7 +117,7 @@ func newVirtualHostFromTemplate(template *contourv1.VirtualHost, host string) *c
 	return virtualHost
 }
 
-func (b *httpProxyRenderer) renderHTTPProxy(
+func (b *renderer) renderHTTPProxy(
 	shardedHTTPProxy *controllerv1.ShardedHTTPProxy,
 	name, ingressClass string,
 	virtualHost *contourv1.VirtualHost,

@@ -22,7 +22,9 @@ import (
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
 	"k8s.tochka.com/sharded-ingress-controller/internal/config"
-	"k8s.tochka.com/sharded-ingress-controller/internal/controller"
+	"k8s.tochka.com/sharded-ingress-controller/internal/controller/httpproxy"
+	"k8s.tochka.com/sharded-ingress-controller/internal/controller/ingress"
+	"k8s.tochka.com/sharded-ingress-controller/internal/engine"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -130,8 +132,8 @@ func main() {
 
 // buildSettings maps the loaded config onto the controller settings shared by
 // both controllers; MaxShards is set per controller by the callers.
-func buildSettings(conf *config.AppConfig) controller.Settings {
-	return controller.Settings{
+func buildSettings(conf *config.AppConfig) engine.Settings {
+	return engine.Settings{
 		TerminationPeriod:                  conf.RateLimit.UpdateCooldown.Object,
 		ShardUpdateCooldown:                conf.RateLimit.UpdateCooldown.Shard,
 		DomainSubstring:                    conf.General.DomainSubstring,
@@ -153,7 +155,7 @@ func buildSettings(conf *config.AppConfig) controller.Settings {
 func setupShardedIngressController(mgr ctrl.Manager, conf *config.AppConfig) {
 	settings := buildSettings(conf)
 	settings.MaxShards = conf.ShardedIngress.Shards
-	reconciler := controller.NewShardedIngressReconciler(
+	reconciler := ingress.NewReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		mgr.GetEventRecorderFor("shardedingress-controller"),
@@ -174,7 +176,7 @@ func setupShardedIngressController(mgr ctrl.Manager, conf *config.AppConfig) {
 func setupShardedHTTPProxyController(mgr ctrl.Manager, conf *config.AppConfig) {
 	settings := buildSettings(conf)
 	settings.MaxShards = conf.ShardedHTTPProxy.Shards
-	reconciler := controller.NewShardedHTTPProxyReconciler(
+	reconciler := httpproxy.NewReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		mgr.GetEventRecorderFor("shardedhttpproxy-controller"),

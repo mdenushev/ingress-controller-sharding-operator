@@ -1,4 +1,4 @@
-package controller
+package httpproxy
 
 import (
 	"context"
@@ -17,6 +17,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
+	"k8s.tochka.com/sharded-ingress-controller/internal/engine"
+	"k8s.tochka.com/sharded-ingress-controller/internal/status"
 )
 
 // TestReconcileLifecycleToReady drives a fresh ShardedHTTPProxy through the
@@ -45,7 +47,7 @@ func TestReconcileLifecycleToReady(t *testing.T) {
 	}
 	shardClass := &networkingv1.IngressClass{ObjectMeta: metav1.ObjectMeta{Name: "new-class-0"}}
 
-	settings := Settings{
+	settings := engine.Settings{
 		MaxShards:                  map[string]int{"new-class": 1},
 		TerminationPeriod:          time.Minute,
 		ShardUpdateCooldown:        time.Millisecond,
@@ -63,24 +65,14 @@ func TestReconcileLifecycleToReady(t *testing.T) {
 		Build()
 	recorder := record.NewFakeRecorder(64)
 
-	engine := NewEngine(
-		fakeClient, testScheme, recorder, settings,
-		newHTTPProxyAdapter(settings),
-		newHTTPProxyRenderer(settings),
-		func() ShardedObject {
-			return &controllerv1.ShardedHTTPProxy{
-				TypeMeta: metav1.TypeMeta{Kind: "ShardedHTTPProxy", APIVersion: controllerv1.GroupVersion.String()},
-			}
-		},
-		"shardedhttpproxy",
-	)
+	r := NewReconciler(fakeClient, testScheme, recorder, settings)
 
 	ctx := context.Background()
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "app"}}
 
 	var phases []controllerv1.ShardedPhase
 	for i := range 6 {
-		_, err := engine.Reconcile(ctx, req)
+		_, err := r.Reconcile(ctx, req)
 		g.Expect(err).NotTo(HaveOccurred(), "pass %d", i)
 
 		got := &controllerv1.ShardedHTTPProxy{}
@@ -130,7 +122,7 @@ func TestReconcileLifecycleToReady(t *testing.T) {
 
 	// A ChildCreated event must have been recorded.
 	events := drainEvents(recorder)
-	g.Expect(events).To(ContainElement(ContainSubstring(EventChildCreated)))
+	g.Expect(events).To(ContainElement(ContainSubstring(status.EventChildCreated)))
 }
 
 func drainEvents(recorder *record.FakeRecorder) []string {

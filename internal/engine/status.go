@@ -1,11 +1,8 @@
-package controller
+package engine
 
 import (
-	"sort"
-
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -13,30 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
-)
-
-// Keys of the per-child records in status.createdObjects.
-const (
-	statusKeyKind = "kind"
-	statusKeyName = "name"
-)
-
-// Event reasons emitted on the parent objects.
-const (
-	EventChildCreated      = "ChildCreated"
-	EventChildUpdated      = "ChildUpdated"
-	EventChildDeleted      = "ChildDeleted"
-	EventTmpChildCreated   = "TmpChildCreated"
-	EventMarkedForDeletion = "MarkedForDeletion"
-	EventDeletionScheduled = "DeletionScheduled"
-	EventApplyScheduled    = "ApplyScheduled"
-	EventReshardingStarted = "ReshardingStarted"
-	EventFinalizerDraining = "FinalizerDraining"
-	EventFinalizerRemoved  = "FinalizerRemoved"
-	EventChildBuildFailed  = "ChildBuildFailed"
-	EventChildApplyFailed  = "ChildApplyFailed"
-
-	EventShardSelectionFailed = "ShardSelectionFailed"
+	"k8s.tochka.com/sharded-ingress-controller/internal/status"
 )
 
 // eventf records a Normal kube event on the parent when a recorder is wired.
@@ -53,17 +27,6 @@ func (e *Engine[C]) warnf(s *scope, reason, format string, args ...any) {
 		return
 	}
 	e.Recorder.Eventf(s.obj, corev1.EventTypeWarning, reason, format, args...)
-}
-
-func findInStatus(shard, kind, name string, createdObjects *map[string][]map[string]string) bool {
-	if objList, ok := (*createdObjects)[shard]; ok {
-		for _, obj := range objList {
-			if obj[statusKeyKind] == kind && obj[statusKeyName] == name {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // updateStatusWithRetry runs mutate (which must modify s.obj and push the
@@ -99,33 +62,15 @@ func (e *Engine[C]) addChildToStatus(s *scope, kind, name, shardName string) err
 	if shardName == "" || kind == "" || name == "" {
 		return nil
 	}
-	status := s.obj.GetShardedStatus()
-	if !findInStatus(shardName, kind, name, &status.CreatedObjects) {
+	if !status.FindIn(shardName, kind, name, s.obj.GetShardedStatus().CreatedObjects) {
 		err := e.updateStatusWithRetry(s, func() error {
-			createdObjects := s.obj.GetShardedStatus().CreatedObjects
-			if findInStatus(shardName, kind, name, &createdObjects) {
+			createdObjects, added := status.AppendChild(
+				s.obj.GetShardedStatus().CreatedObjects,
+				shardName, kind, name,
+			)
+			if !added {
 				return errors.NewAlreadyExists(schema.GroupResource{}, shardName)
 			}
-			if createdObjects == nil {
-				createdObjects = make(map[string][]map[string]string)
-			}
-			createdObjects[shardName] = append(
-				createdObjects[shardName],
-				map[string]string{statusKeyKind: kind, statusKeyName: name},
-			)
-
-			// Clean up empty entries
-			for key, value := range createdObjects {
-				if len(value) == 0 {
-					delete(createdObjects, key)
-				}
-			}
-
-			// Keep the list stable for readers and comparisons.
-			sort.Slice(createdObjects[shardName], func(i, j int) bool {
-				return createdObjects[shardName][i][statusKeyName] < createdObjects[shardName][j][statusKeyName]
-			})
-
 			s.obj.GetShardedStatus().CreatedObjects = createdObjects
 			return e.Status().Update(s.ctx, s.obj)
 		})
@@ -141,18 +86,7 @@ func (e *Engine[C]) addChildToStatus(s *scope, kind, name, shardName string) err
 // status.
 func (e *Engine[C]) removeChildFromStatus(s *scope, name string) error {
 	return e.updateStatusWithRetry(s, func() error {
-		status := s.obj.GetShardedStatus()
-		for key, valSlice := range status.CreatedObjects {
-			for i, valMap := range valSlice {
-				if valMap[statusKeyName] == name {
-					status.CreatedObjects[key] = append(valSlice[:i], valSlice[i+1:]...)
-					break
-				}
-			}
-			if len(status.CreatedObjects[key]) == 0 {
-				delete(status.CreatedObjects, key)
-			}
-		}
+		status.RemoveChild(s.obj.GetShardedStatus(), name)
 		return e.Status().Update(s.ctx, s.obj)
 	})
 }
@@ -162,44 +96,11 @@ func (e *Engine[C]) removeChildFromStatus(s *scope, name string) error {
 // update storms.
 func (e *Engine[C]) setLifecycle(s *scope, phase controllerv1.ShardedPhase, ready, resharding metav1.Condition) error {
 	return e.updateStatusWithRetry(s, func() error {
-		status := s.obj.GetShardedStatus()
-		changed := false
-
-		if status.Phase != phase {
-			status.Phase = phase
-			changed = true
-		}
-		if status.ObservedGeneration != s.obj.GetGeneration() {
-			status.ObservedGeneration = s.obj.GetGeneration()
-			changed = true
-		}
-		ready.ObservedGeneration = s.obj.GetGeneration()
-		resharding.ObservedGeneration = s.obj.GetGeneration()
-		if apimeta.SetStatusCondition(&status.Conditions, ready) {
-			changed = true
-		}
-		if apimeta.SetStatusCondition(&status.Conditions, resharding) {
-			changed = true
-		}
-
-		if !changed {
+		if !status.ApplyLifecycle(s.obj.GetShardedStatus(), s.obj.GetGeneration(), phase, ready, resharding) {
 			return nil
 		}
 		return e.Status().Update(s.ctx, s.obj)
 	})
-}
-
-func condition(condType string, isTrue bool, reason, message string) metav1.Condition {
-	status := metav1.ConditionFalse
-	if isTrue {
-		status = metav1.ConditionTrue
-	}
-	return metav1.Condition{
-		Type:    condType,
-		Status:  status,
-		Reason:  reason,
-		Message: message,
-	}
 }
 
 // publishLifecycle mirrors the outcome of the pass into the parent status.
@@ -211,8 +112,8 @@ func (e *Engine[C]) publishLifecycle(s *scope, result ctrl.Result) {
 		if err := e.setLifecycle(
 			s,
 			controllerv1.PhaseResharding,
-			condition(controllerv1.ConditionReady, false, "Resharding", "Children are migrating between shards"),
-			condition(
+			status.Condition(controllerv1.ConditionReady, false, "Resharding", "Children are migrating between shards"),
+			status.Condition(
 				controllerv1.ConditionResharding,
 				true,
 				"MigrationInProgress",
@@ -225,8 +126,8 @@ func (e *Engine[C]) publishLifecycle(s *scope, result ctrl.Result) {
 		if err := e.setLifecycle(
 			s,
 			controllerv1.PhaseProvisioning,
-			condition(controllerv1.ConditionReady, false, "Provisioning", "Children are being applied"),
-			condition(
+			status.Condition(controllerv1.ConditionReady, false, "Provisioning", "Children are being applied"),
+			status.Condition(
 				controllerv1.ConditionResharding,
 				false,
 				"NoMigration",
@@ -239,8 +140,13 @@ func (e *Engine[C]) publishLifecycle(s *scope, result ctrl.Result) {
 		if err := e.setLifecycle(
 			s,
 			controllerv1.PhaseReady,
-			condition(controllerv1.ConditionReady, true, "ChildrenReady", "All children match the desired state"),
-			condition(
+			status.Condition(
+				controllerv1.ConditionReady,
+				true,
+				"ChildrenReady",
+				"All children match the desired state",
+			),
+			status.Condition(
 				controllerv1.ConditionResharding,
 				false,
 				"NoMigration",

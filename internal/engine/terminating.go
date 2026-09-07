@@ -1,4 +1,4 @@
-package controller
+package engine
 
 import (
 	"fmt"
@@ -12,14 +12,28 @@ import (
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
 	"k8s.tochka.com/sharded-ingress-controller/internal/metrics"
+	"k8s.tochka.com/sharded-ingress-controller/internal/status"
 )
 
 func (e *Engine[C]) reconcileTerminating(s *scope) (ctrl.Result, error) {
 	logger := log.FromContext(s.ctx)
 
-	if err := e.setLifecycle(s, controllerv1.PhaseTerminating,
-		condition(controllerv1.ConditionReady, false, "Terminating", "Parent is being deleted, children are draining"),
-		condition(controllerv1.ConditionResharding, false, "Terminating", "Parent is being deleted")); err != nil {
+	if err := e.setLifecycle(
+		s,
+		controllerv1.PhaseTerminating,
+		status.Condition(
+			controllerv1.ConditionReady,
+			false,
+			"Terminating",
+			"Parent is being deleted, children are draining",
+		),
+		status.Condition(
+			controllerv1.ConditionResharding,
+			false,
+			"Terminating",
+			"Parent is being deleted",
+		),
+	); err != nil {
 		logger.Error(err, "[finalizer] unable to publish terminating status")
 	}
 
@@ -59,7 +73,7 @@ func (e *Engine[C]) drainChild(s *scope, child *unstructured.Unstructured) (bool
 	var shardName string
 	for shard, objStatusSlice := range s.obj.GetShardedStatus().CreatedObjects {
 		for _, objStatus := range objStatusSlice {
-			if objStatus[statusKeyName] == child.GetName() {
+			if objStatus[status.KeyName] == child.GetName() {
 				shardName = shard
 			}
 		}
@@ -105,7 +119,7 @@ func (e *Engine[C]) drainChild(s *scope, child *unstructured.Unstructured) (bool
 		}
 		e.eventf(
 			s,
-			EventFinalizerDraining,
+			status.EventFinalizerDraining,
 			"Draining child %s %s before deletion",
 			child.GetKind(),
 			child.GetName(),
@@ -136,7 +150,7 @@ func (e *Engine[C]) drainChild(s *scope, child *unstructured.Unstructured) (bool
 		"objectName",
 		child.GetName(),
 	)
-	e.eventf(s, EventChildDeleted, "Deleted child %s %s", child.GetKind(), child.GetName())
+	e.eventf(s, status.EventChildDeleted, "Deleted child %s %s", child.GetKind(), child.GetName())
 	metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
 	return false, nil
 }
@@ -167,7 +181,7 @@ func (e *Engine[C]) removeFinalizer(s *scope) (ctrl.Result, error) {
 		return ctrl.Result{}, fmt.Errorf("cannot remove finalizer: %w", err)
 	}
 	logger.Info("successfully removed finalizer from object")
-	e.eventf(s, EventFinalizerRemoved, "All children drained, finalizer removed")
+	e.eventf(s, status.EventFinalizerRemoved, "All children drained, finalizer removed")
 	return ctrl.Result{}, nil
 }
 
