@@ -233,7 +233,7 @@ func (e *Engine[C]) evaluateDeletionTiming(
 		obj.GetAnnotations()[AutoDeleteAfterAnnotation],
 	)
 	metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
-	e.tracker.markWaiting(s.key)
+	e.tracker.MarkWaiting(s.key)
 	s.mutated = true
 	return false, nil
 }

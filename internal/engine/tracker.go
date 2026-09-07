@@ -48,7 +48,9 @@ func (t *stateTracker) move(key string, srcs []map[string]bool, dests []map[stri
 	t.updateMetrics()
 }
 
-func (t *stateTracker) markWaiting(key string) {
+// MarkWaiting and IsManaged are exported: they satisfy scheduler.Tracker.
+
+func (t *stateTracker) MarkWaiting(key string) {
 	t.move(key, []map[string]bool{t.ready, t.errored}, []map[string]bool{t.waiting})
 }
 
@@ -61,7 +63,7 @@ func (t *stateTracker) markErrored(key string) {
 }
 
 func (t *stateTracker) isWaiting(key string) bool { return t.waiting[key] }
-func (t *stateTracker) isManaged(key string) bool { return t.managed[key] }
+func (t *stateTracker) IsManaged(key string) bool { return t.managed[key] }
 
 func (t *stateTracker) markManaged(key string) { t.managed[key] = true }
 

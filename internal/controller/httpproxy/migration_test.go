@@ -37,7 +37,7 @@ type noopScheduler struct{}
 func (noopScheduler) NoteShard(string) {}
 
 func (noopScheduler) Schedule(
-	string, *controllerv1.ShardedStatus, []engine.Shard, logr.Logger,
+	string, *controllerv1.ShardedStatus, []string, logr.Logger,
 ) (ctrl.Result, bool) {
 	return ctrl.Result{}, false
 }

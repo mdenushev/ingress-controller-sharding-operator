@@ -1,4 +1,10 @@
-package engine
+// Package scheduler implements the rate limiting of apply passes: creations
+// and deletions on one shard are spaced by a cooldown and deletions are
+// grouped into termination-period-sized windows, protecting the ingress
+// controllers from config-reload storms. The engine consumes it behind its
+// Scheduler interface, so a fair per-shard queue can replace this
+// implementation without touching the engine.
+package scheduler
 
 import (
 	"context"
@@ -15,16 +21,14 @@ import (
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
 )
 
-// Scheduler decides when a parent may apply changes to its shards, protecting
-// the ingress controllers from config-reload storms.
-type Scheduler interface {
-	// NoteShard registers a shard so its rate-limit windows are tracked.
-	NoteShard(shard string)
-	// Schedule books the next apply slot for the parent. When the slot is
-	// in the future it returns the ctrl.Result to requeue with and
-	// handled=true; when the parent may proceed right now it returns
-	// handled=false.
-	Schedule(objKey string, status *controllerv1.ShardedStatus, shards []Shard, logger logr.Logger) (ctrl.Result, bool)
+// Tracker is the per-parent in-memory state the scheduler consults and
+// updates while booking slots.
+type Tracker interface {
+	// MarkWaiting flags the parent as waiting for its booked apply slot.
+	MarkWaiting(key string)
+	// IsManaged reports whether this process has already reconciled the
+	// parent. Unmanaged parents are adopted by creating, never by deleting.
+	IsManaged(key string) bool
 }
 
 // applyPlan tracks the rate-limit windows of one shard.
@@ -35,23 +39,23 @@ type applyPlan struct {
 	nextDeletingWindowStart    time.Time
 }
 
-// cooldownScheduler spaces creations and deletions on a shard by
-// ShardUpdateCooldown and groups deletions into TerminationPeriod-sized
-// windows. It is the pre-refactoring behavior kept behind the Scheduler
-// interface; a fair per-shard queue can replace it without touching the
-// engine.
-type cooldownScheduler struct {
+// Cooldown spaces creations and deletions on a shard by the shard update
+// cooldown and groups deletions into termination-period-sized windows. It is
+// the pre-refactoring behavior kept behind the engine's Scheduler interface.
+type Cooldown struct {
 	terminationPeriod   time.Duration
 	shardUpdateCooldown time.Duration
 	nextApplyTime       map[string]*applyPlan
-	tracker             *stateTracker
+	tracker             Tracker
 }
 
-func newCooldownScheduler(
+// NewCooldown builds the cooldown scheduler over the given windows and
+// per-parent state tracker.
+func NewCooldown(
 	terminationPeriod, shardUpdateCooldown time.Duration,
-	tracker *stateTracker,
-) *cooldownScheduler {
-	return &cooldownScheduler{
+	tracker Tracker,
+) *Cooldown {
+	return &Cooldown{
 		terminationPeriod:   terminationPeriod,
 		shardUpdateCooldown: shardUpdateCooldown,
 		nextApplyTime:       make(map[string]*applyPlan),
@@ -59,14 +63,15 @@ func newCooldownScheduler(
 	}
 }
 
-func (s *cooldownScheduler) NoteShard(shard string) {
+// NoteShard registers a shard so its rate-limit windows are tracked.
+func (s *Cooldown) NoteShard(shard string) {
 	s.plan(shard).lastCreating = time.Now()
 }
 
 // plan returns the shard's window state, creating it lazily for shards that
 // were not discovered at start-up (e.g. classes removed from the config while
 // their children still exist).
-func (s *cooldownScheduler) plan(shard string) *applyPlan {
+func (s *Cooldown) plan(shard string) *applyPlan {
 	ap, exists := s.nextApplyTime[shard]
 	if !exists {
 		ap = &applyPlan{}
@@ -101,12 +106,14 @@ const (
 
 // Schedule classifies the pending change (creating on a new shard vs deleting
 // from an old one) from the difference between the shards recorded in the
-// status and the shards the parent should live on, then books a slot in the
-// target shard's windows.
-func (s *cooldownScheduler) Schedule(
+// status and the shard (class) names the parent should live on, then books a
+// slot in the target shard's windows. When the slot is in the future it
+// returns the ctrl.Result to requeue with and handled=true; when the parent
+// may proceed right now it returns handled=false.
+func (s *Cooldown) Schedule(
 	objKey string,
 	status *controllerv1.ShardedStatus,
-	shards []Shard,
+	shards []string,
 	logger logr.Logger,
 ) (ctrl.Result, bool) {
 	action, shard := s.classify(objKey, status, shards, logger)
@@ -123,17 +130,17 @@ func (s *cooldownScheduler) Schedule(
 		return ctrl.Result{}, false
 	}
 
-	s.tracker.markWaiting(objKey)
+	s.tracker.MarkWaiting(objKey)
 	return result, true
 }
 
 // classify compares the shards recorded in the status with the shards the
 // parent must live on and decides which action the parent needs next, and on
 // which shard.
-func (s *cooldownScheduler) classify(
+func (s *Cooldown) classify(
 	objKey string,
 	status *controllerv1.ShardedStatus,
-	shards []Shard,
+	applyShards []string,
 	logger logr.Logger,
 ) (applyAction, string) {
 	if len(status.CreatedObjects) == 0 {
@@ -141,14 +148,11 @@ func (s *cooldownScheduler) classify(
 		return actionNone, ""
 	}
 
-	var statusShards, applyShards []string
+	var statusShards []string
 	for shard, v := range status.CreatedObjects {
 		if len(v) > 0 {
 			statusShards = append(statusShards, shard)
 		}
-	}
-	for _, shard := range shards {
-		applyShards = append(applyShards, shard.Name)
 	}
 	diffShard := difference(statusShards, applyShards)
 
@@ -158,10 +162,10 @@ func (s *cooldownScheduler) classify(
 		reflect.DeepEqual(diffShard, statusShards):
 		// Everything recorded lives elsewhere: (re)create on the target shard.
 		return actionCreate, applyShards[0]
-	case len(diffShard) >= 1 && len(statusShards) > 1 && s.tracker.isManaged(objKey):
+	case len(diffShard) >= 1 && len(statusShards) > 1 && s.tracker.IsManaged(objKey):
 		// A managed parent has leftovers on shards it no longer targets.
 		return actionDelete, diffShard[0]
-	case !s.tracker.isManaged(objKey) && len(diffShard) != 0:
+	case !s.tracker.IsManaged(objKey) && len(diffShard) != 0:
 		// Not seen by this process yet: adopt by creating, never by deleting.
 		return actionCreate, diffShard[0]
 	case len(diffShard) == 0:
@@ -174,7 +178,7 @@ func (s *cooldownScheduler) classify(
 
 // bookCreateSlot books the next creation slot on the shard, spacing bookings
 // by the shard update cooldown, and resets the shard's deletion windows.
-func (s *cooldownScheduler) bookCreateSlot(shard string) time.Time {
+func (s *Cooldown) bookCreateSlot(shard string) time.Time {
 	ap := s.plan(shard)
 
 	slot := time.Now().Add(1 * time.Second)
@@ -193,7 +197,7 @@ func (s *cooldownScheduler) bookCreateSlot(shard string) time.Time {
 // bookDeleteSlot books the next deletion slot on the shard. Deletions are
 // grouped into termination windows so an ingress controller reloads once per
 // window instead of once per object.
-func (s *cooldownScheduler) bookDeleteSlot(objKey, shard string, logger logr.Logger) time.Time {
+func (s *Cooldown) bookDeleteSlot(objKey, shard string, logger logr.Logger) time.Time {
 	ap := s.plan(shard)
 	slot := time.Now()
 
@@ -246,15 +250,21 @@ func (s *cooldownScheduler) bookDeleteSlot(objKey, shard string, logger logr.Log
 	return slot
 }
 
-// discoverClusterShards counts the shard ingress classes present in the
+// ShardRegistry is the part of a scheduler that shard discovery feeds.
+type ShardRegistry interface {
+	// NoteShard registers a shard so its rate-limit windows are tracked.
+	NoteShard(shard string)
+}
+
+// DiscoverClusterShards counts the shard ingress classes present in the
 // cluster and lowers maxShards where the cluster has fewer shards than the
 // configuration asks for. It also registers every discovered shard with the
 // scheduler.
-func discoverClusterShards(
+func DiscoverClusterShards(
 	ctx context.Context,
 	c client.Client,
 	maxShards map[string]int,
-	scheduler Scheduler,
+	registry ShardRegistry,
 	logger logr.Logger,
 ) error {
 	shardCounts := make(map[string]int)
@@ -271,7 +281,7 @@ func discoverClusterShards(
 			baseName := shardSuffixRegex.ReplaceAllString(ingressClass.Name, "")
 			shardCounts[baseName]++
 		}
-		scheduler.NoteShard(ingressClass.Name)
+		registry.NoteShard(ingressClass.Name)
 	}
 
 	for className, configShard := range maxShards {
@@ -289,12 +299,12 @@ func discoverClusterShards(
 				maxShards[className] = count
 			}
 			for i := range configShard {
-				scheduler.NoteShard(fmt.Sprintf("%s-%d", className, i))
+				registry.NoteShard(fmt.Sprintf("%s-%d", className, i))
 			}
 		} else {
 			logger.Info("ClassName from maxShards not found in Cluster, setting to 0", "IngressClass", className)
 			maxShards[className] = 0
-			scheduler.NoteShard(className)
+			registry.NoteShard(className)
 		}
 	}
 	return nil

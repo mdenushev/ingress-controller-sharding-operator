@@ -3,7 +3,9 @@ package engine
 import (
 	"time"
 
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
@@ -117,6 +119,19 @@ type ChildAdapter[C client.Object] interface {
 	// Merge copies the desired spec and metadata onto the existing object,
 	// keeping server-populated fields intact.
 	Merge(existing, desired C) C
+}
+
+// Scheduler decides when a parent may apply changes to its shards,
+// protecting the ingress controllers from config-reload storms. The default
+// cooldown-window implementation lives in internal/scheduler.
+type Scheduler interface {
+	// NoteShard registers a shard so its rate-limit windows are tracked.
+	NoteShard(shard string)
+	// Schedule books the next apply slot for the parent on the named
+	// shards. When the slot is in the future it returns the ctrl.Result to
+	// requeue with and handled=true; when the parent may proceed right now
+	// it returns handled=false.
+	Schedule(objKey string, status *controllerv1.ShardedStatus, shards []string, logger logr.Logger) (ctrl.Result, bool)
 }
 
 // ShardSelector decides which shards a parent lives on.

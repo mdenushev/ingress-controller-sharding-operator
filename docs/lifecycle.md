@@ -77,7 +77,8 @@ child is unregistered and deleted.
 ## Rate limiting
 
 Before mutating anything, a pass books a slot from the `Scheduler`
-(`internal/engine/scheduler.go`). The current implementation keeps the
+(interface in `internal/engine`, cooldown implementation in
+`internal/scheduler`). The current implementation keeps the
 historical behavior: creations/updates on one shard are spaced by
 `rateLimit.updateCooldown.shard`, deletions are grouped into
 `T`-sized windows, protecting the ingress controllers from config-reload
@@ -91,12 +92,12 @@ implementation behind the same interface.
 | Concern | Where |
 |---------|-------|
 | Lifecycle engine (one generic `Reconcile`) | `internal/engine/engine.go` (core), `desired.go`, `children.go`, `prune.go`, `terminating.go` |
-| Interfaces (`ChildAdapter`, `DesiredRenderer`, `ShardSelector`, `Scheduler`) | `internal/engine/interfaces.go`, `scheduler.go` |
+| Interfaces (`ChildAdapter`, `DesiredRenderer`, `ShardSelector`, `Scheduler`) | `internal/engine/interfaces.go` |
 | Shard selection | `internal/engine/shards.go` |
 | Desired-state rendering | `internal/controller/{ingress,httpproxy}/desired.go` |
 | Child compare/merge per type | `internal/controller/{ingress,httpproxy}/adapter.go` |
 | Migration timeline & annotations | `internal/engine/migration.go` |
-| Rate limiting | `internal/engine/scheduler.go` |
+| Rate limiting | `internal/scheduler/scheduler.go` |
 | Status bookkeeping, conditions, events | `internal/status/status.go` (pure helpers), `internal/engine/status.go` (status I/O) |
 | In-memory lists & metrics | `internal/engine/tracker.go` |
 | Thin per-type controllers | `internal/controller/{ingress,httpproxy}/reconciler.go` |

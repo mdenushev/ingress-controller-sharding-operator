@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
+	"k8s.tochka.com/sharded-ingress-controller/internal/scheduler"
 	"k8s.tochka.com/sharded-ingress-controller/internal/status"
 )
 
@@ -89,7 +90,7 @@ func NewEngine[C client.Object](
 		Adapter:    adapter,
 		Renderer:   renderer,
 		Selector:   &hashShardSelector{maxShards: settings.MaxShards},
-		Scheduler:  newCooldownScheduler(settings.TerminationPeriod, settings.ShardUpdateCooldown, tracker),
+		Scheduler:  scheduler.NewCooldown(settings.TerminationPeriod, settings.ShardUpdateCooldown, tracker),
 		NewSharded: newSharded,
 		CtrlName:   ctrlName,
 		tracker:    tracker,
@@ -198,7 +199,11 @@ func (e *Engine[C]) scheduleApply(s *scope, logger logr.Logger) (ctrl.Result, bo
 	if e.tracker.isWaiting(s.key) {
 		return ctrl.Result{}, false
 	}
-	result, handled := e.Scheduler.Schedule(s.key, s.obj.GetShardedStatus(), s.shards, logger)
+	shardNames := make([]string, 0, len(s.shards))
+	for _, shard := range s.shards {
+		shardNames = append(shardNames, shard.Name)
+	}
+	result, handled := e.Scheduler.Schedule(s.key, s.obj.GetShardedStatus(), shardNames, logger)
 	if !handled {
 		return ctrl.Result{}, false
 	}
@@ -226,7 +231,7 @@ func (e *Engine[C]) ensureInitialized(ctx context.Context) error {
 		return nil
 	}
 	logger := log.Log.WithName(e.CtrlName)
-	if err := discoverClusterShards(ctx, e.Client, e.Settings.MaxShards, e.Scheduler, logger); err != nil {
+	if err := scheduler.DiscoverClusterShards(ctx, e.Client, e.Settings.MaxShards, e.Scheduler, logger); err != nil {
 		return err
 	}
 	e.initialized = true

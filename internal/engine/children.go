@@ -19,7 +19,7 @@ func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) ctrl.Resu
 	logger := log.FromContext(s.ctx)
 	statusList := make(map[string][]map[string]string)
 
-	if !e.tracker.isManaged(s.key) {
+	if !e.tracker.IsManaged(s.key) {
 		e.tracker.markManaged(s.key)
 	}
 	e.tracker.noteShardedClass(s.key, s.obj.GetIngressClassName())
