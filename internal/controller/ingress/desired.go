@@ -72,8 +72,10 @@ func (b *renderer) RenderChildren(
 		}
 	}
 
+	// On a sharded class every child carries its shard number in the name;
+	// only a non-sharded (regular) class keeps the bare parent name.
 	mainName := shardedIngress.Name
-	if sharded.GetIngressClassName() != plan.Shard.Name {
+	if !plan.Regular {
 		mainName = fmt.Sprintf("%s-%d", shardedIngress.Name, plan.Shard.Number)
 	}
 
@@ -85,7 +87,7 @@ func (b *renderer) RenderChildren(
 	// passes where it is not rendered, so it is booked alongside the main
 	// child.
 	if plan.OldShard != "" {
-		main.AlsoBook = []string{tmpName}
+		main.ExtraChildNames = []string{tmpName}
 	}
 	children = append(children, main)
 

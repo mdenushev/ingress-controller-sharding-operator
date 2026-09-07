@@ -184,5 +184,3 @@ func (e *Engine[C]) removeFinalizer(s *scope) (ctrl.Result, error) {
 	e.eventf(s, status.EventFinalizerRemoved, "All children drained, finalizer removed")
 	return ctrl.Result{}, nil
 }
-
-// publishLifecycle mirrors the outcome of the pass into the parent status.

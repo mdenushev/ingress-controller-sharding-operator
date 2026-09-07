@@ -14,9 +14,11 @@ import (
 	"k8s.tochka.com/sharded-ingress-controller/internal/status"
 )
 
+// applyChildren brings the cluster to the desired set: it creates missing
+// children, updates drifted ones and prunes children that are no longer
+// desired. A create or delete ends the pass immediately so the loop applies
 // one change at a time.
-func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) ctrl.Result {
-	logger := log.FromContext(s.ctx)
+func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) (ctrl.Result, error) {
 	statusList := make(map[string][]map[string]string)
 
 	if !e.tracker.IsManaged(s.key) {
@@ -24,68 +26,44 @@ func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) ctrl.Resu
 	}
 	e.tracker.noteShardedClass(s.key, s.obj.GetIngressClassName())
 
-	for _, current := range desired {
-		found := e.Adapter.NewObject()
-		if err := ctrl.SetControllerReference(s.obj, current.Obj, e.Scheme); err != nil {
-			logger.Error(
-				err,
-				"unable to set controller reference",
-				"objectKind",
-				e.Adapter.Kind(),
-				"objectName",
-				current.Obj.GetName(),
+	for _, child := range desired {
+		if err := ctrl.SetControllerReference(s.obj, child.Obj, e.Scheme); err != nil {
+			return ctrl.Result{}, fmt.Errorf(
+				"cannot set controller reference on %s %s: %w",
+				e.Adapter.Kind(), child.Obj.GetName(), err,
 			)
 		}
+
+		existing := e.Adapter.NewObject()
 		err := e.Get(
 			s.ctx,
-			types.NamespacedName{Name: current.Obj.GetName(), Namespace: current.Obj.GetNamespace()},
-			found,
+			types.NamespacedName{Name: child.Obj.GetName(), Namespace: child.Obj.GetNamespace()},
+			existing,
 		)
-		switch {
-		case apierrors.IsNotFound(err):
-			if createErr := e.createChild(s, current); createErr != nil {
-				logger.Error(
-					createErr,
-					"unable to create",
-					"objectKind",
-					e.Adapter.Kind(),
-					"objectName",
-					current.Obj.GetName(),
-				)
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
 			}
-			return ctrl.Result{}
-		case err != nil:
-			logger.Error(err, "unable to get", "objectKind", e.Adapter.Kind(), "objectName", current.Obj.GetName())
-		default:
-			if updateErr := e.updateChild(s, found, current); updateErr != nil {
-				logger.Error(
-					updateErr,
-					"unable to update",
-					"objectKind",
-					e.Adapter.Kind(),
-					"objectName",
-					current.Obj.GetName(),
-				)
-			}
+			// The creation is the pass's one mutation: stop here.
+			return ctrl.Result{}, e.createChild(s, child)
+		}
+		if updateErr := e.updateChild(s, existing, child); updateErr != nil {
+			return ctrl.Result{}, updateErr
 		}
 
-		statusList[current.Shard.Name] = append(
-			statusList[current.Shard.Name],
-			map[string]string{status.KeyKind: e.Adapter.Kind(), status.KeyName: current.Obj.GetName()},
+		statusList[child.Shard.Name] = append(
+			statusList[child.Shard.Name],
+			map[string]string{status.KeyKind: e.Adapter.Kind(), status.KeyName: child.Obj.GetName()},
 		)
-		for _, name := range current.AlsoBook {
-			statusList[current.Shard.Name] = append(
-				statusList[current.Shard.Name],
+		for _, name := range child.ExtraChildNames {
+			statusList[child.Shard.Name] = append(
+				statusList[child.Shard.Name],
 				map[string]string{status.KeyKind: e.Adapter.Kind(), status.KeyName: name},
 			)
 		}
 	}
 
-	result, err := e.pruneChildren(s, statusList)
-	if err != nil {
-		logger.Error(err, "unable to delete unlisted objects")
-	}
-	return result
+	return e.pruneChildren(s, statusList)
 }
 
 func (e *Engine[C]) createChild(s *scope, child DesiredChild[C]) error {
@@ -180,8 +158,3 @@ func (e *Engine[C]) listChildren(s *scope) (unstructured.UnstructuredList, error
 	}
 	return res, nil
 }
-
-// pruneChildren walks the live children and schedules the ones that are no
-// longer desired for graceful deletion (unregister from service discovery
-// first, delete after the termination window). It also drops status records
-// whose objects are gone.

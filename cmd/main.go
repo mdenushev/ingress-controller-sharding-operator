@@ -155,14 +155,14 @@ func buildSettings(conf *config.AppConfig) engine.Settings {
 func setupShardedIngressController(mgr ctrl.Manager, conf *config.AppConfig) {
 	settings := buildSettings(conf)
 	settings.MaxShards = conf.ShardedIngress.Shards
-	reconciler := ingress.NewReconciler(
+	ctl := ingress.NewController(
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		mgr.GetEventRecorderFor("shardedingress-controller"),
 		settings,
 	)
 
-	if err := reconciler.SetupWithManager(
+	if err := ctl.SetupWithManager(
 		mgr,
 		1,
 		conf.RateLimit.APIRateLimit,
@@ -176,14 +176,14 @@ func setupShardedIngressController(mgr ctrl.Manager, conf *config.AppConfig) {
 func setupShardedHTTPProxyController(mgr ctrl.Manager, conf *config.AppConfig) {
 	settings := buildSettings(conf)
 	settings.MaxShards = conf.ShardedHTTPProxy.Shards
-	reconciler := httpproxy.NewReconciler(
+	ctl := httpproxy.NewController(
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		mgr.GetEventRecorderFor("shardedhttpproxy-controller"),
 		settings,
 	)
 
-	if err := reconciler.SetupWithManager(
+	if err := ctl.SetupWithManager(
 		mgr,
 		1,
 		conf.RateLimit.APIRateLimit,

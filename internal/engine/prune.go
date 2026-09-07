@@ -12,6 +12,10 @@ import (
 	"k8s.tochka.com/sharded-ingress-controller/internal/status"
 )
 
+// pruneChildren walks the live children and schedules the ones that are no
+// longer desired for graceful deletion (unregister from service discovery
+// first, delete after the termination window). It also drops status records
+// whose objects are gone.
 func (e *Engine[C]) pruneChildren(s *scope, currentList map[string][]map[string]string) (ctrl.Result, error) {
 	logger := log.FromContext(s.ctx)
 
@@ -22,7 +26,17 @@ func (e *Engine[C]) pruneChildren(s *scope, currentList map[string][]map[string]
 	}
 
 	for _, obj := range childObjs.Items {
-		result, done, pruneErr := e.pruneChild(s, &obj, currentList)
+		// A child that is still desired just stays recorded in the status —
+		// except tmp children, which always run their deletion timeline.
+		desired, shardName := desiredIn(s.shards, &obj, currentList)
+		if desired && !isTmpChildName(s.obj.GetName(), obj.GetName()) {
+			if statusErr := e.addChildToStatus(s, obj.GetKind(), obj.GetName(), shardName); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+			continue
+		}
+
+		result, done, pruneErr := e.pruneChild(s, &obj, shardName)
 		if pruneErr != nil {
 			return ctrl.Result{}, pruneErr
 		}
@@ -40,39 +54,36 @@ func (e *Engine[C]) pruneChildren(s *scope, currentList map[string][]map[string]
 	return ctrl.Result{}, nil
 }
 
-// pruneChild keeps a desired child recorded in the status, and walks a child
-// that is no longer desired (or is a tmp child, which always runs its
-// timeline) through the graceful deletion steps. done is true when the pass
-// must end with the returned result.
+// desiredIn reports whether the child is in the pass's desired list, and on
+// which shard.
+func desiredIn(
+	shards []Shard,
+	obj *unstructured.Unstructured,
+	currentList map[string][]map[string]string,
+) (bool, string) {
+	for _, shard := range shards {
+		if status.FindIn(shard.Name, obj.GetKind(), obj.GetName(), currentList) {
+			return true, shard.Name
+		}
+	}
+	return false, ""
+}
+
+// pruneChild walks one no-longer-desired (or tmp) child through the graceful
+// deletion steps. shardName is the metrics/bookkeeping label, overridden by
+// the shard recorded in the status when there is one. done is true when the
+// pass must end with the returned result.
 func (e *Engine[C]) pruneChild(
 	s *scope,
 	obj *unstructured.Unstructured,
-	currentList map[string][]map[string]string,
+	shardName string,
 ) (ctrl.Result, bool, error) {
 	logger := log.FromContext(s.ctx)
 
-	keep := false
-	var shardName string
-	for _, shard := range s.shards {
-		if status.FindIn(shard.Name, obj.GetKind(), obj.GetName(), currentList) {
-			keep = true
-			shardName = shard.Name
-			break
-		}
+	if recorded := e.recordedShard(s, obj.GetName()); recorded != "" {
+		shardName = recorded
 	}
 
-	// tmp children always run their deletion timeline, kept or not.
-	if keep && !isTmpChildName(s.obj.GetName(), obj.GetName()) {
-		return ctrl.Result{}, false, e.addChildToStatus(s, obj.GetKind(), obj.GetName(), shardName)
-	}
-
-	for shard, objStatusSlice := range s.obj.GetShardedStatus().CreatedObjects {
-		for _, objStatus := range objStatusSlice {
-			if objStatus[status.KeyName] == obj.GetName() {
-				shardName = shard
-			}
-		}
-	}
 	shouldDelete, err := e.evaluateDeletionTiming(s, obj, shardName)
 	if err != nil {
 		logger.Error(err, "error handling deletion timing", "objectKind", obj.GetKind(), "objectName", obj.GetName())
@@ -95,6 +106,20 @@ func (e *Engine[C]) pruneChild(
 		return ctrl.Result{}, false, statusErr
 	}
 	return ctrl.Result{RequeueAfter: e.Settings.TerminationPeriod}, true, nil
+}
+
+// recordedShard returns the shard the named child is recorded under in the
+// parent status, "" when it is not recorded.
+func (e *Engine[C]) recordedShard(s *scope, name string) string {
+	recorded := ""
+	for shard, objStatusSlice := range s.obj.GetShardedStatus().CreatedObjects {
+		for _, objStatus := range objStatusSlice {
+			if objStatus[status.KeyName] == name {
+				recorded = shard
+			}
+		}
+	}
+	return recorded
 }
 
 // dropStaleStatusRecords removes status records whose objects no longer exist
@@ -145,11 +170,9 @@ func (e *Engine[C]) evaluateDeletionTiming(
 	obj *unstructured.Unstructured,
 	shardName string,
 ) (bool, error) {
-	logger := log.FromContext(s.ctx)
-
 	deleteAfterTime, deleteAfterExists, err := parseDeleteAfterAnnotation(obj)
 	if err != nil {
-		logger.Error(
+		log.FromContext(s.ctx).Error(
 			err,
 			"unable to parse auto-delete-after annotation",
 			"objectKind",
@@ -164,56 +187,42 @@ func (e *Engine[C]) evaluateDeletionTiming(
 	if isTmpChildName(s.obj.GetName(), obj.GetName()) {
 		delTime = e.Settings.TerminationPeriod * tmpChildDeleteWindows
 	}
-	markedForDeletion := e.clock.isMarkedForUnregistering(obj)
+	marked := e.clock.isMarkedForUnregistering(obj)
 
-	if deleteAfterExists {
-		if time.Now().After(deleteAfterTime) && markedForDeletion {
-			// Time to delete
-			return true, nil
-		}
-
-		timeBeforeUnregister := deleteAfterTime.Add(-e.Settings.TerminationPeriod)
-		if time.Now().After(timeBeforeUnregister) && !markedForDeletion {
-			e.clock.markForUnregistering(obj)
-			setDeleteAfterAnnotation(obj, delTime)
-
-			if updateErr := e.Update(s.ctx, obj); updateErr != nil {
-				logger.Error(
-					updateErr,
-					"unable to update object with marked-for-deletion annotation",
-					"objectKind",
-					obj.GetKind(),
-					"objectName",
-					obj.GetName(),
-				)
-				return false, updateErr
-			}
-			logger.Info("marked-for-deletion annotation set", "objectKind", obj.GetKind(), "objectName", obj.GetName())
-			e.eventf(
-				s,
-				status.EventMarkedForDeletion,
-				"Marked %s %s for service discovery unregistering",
-				obj.GetKind(),
-				obj.GetName(),
-			)
-			metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
-			s.mutated = true
-		}
-
-		return false, nil
+	if !deleteAfterExists {
+		return false, e.scheduleChildDeletion(s, obj, shardName, delTime)
 	}
+	if time.Now().After(deleteAfterTime) && marked {
+		// The deadline passed and service discovery dropped the child.
+		return true, nil
+	}
+	if time.Now().After(deleteAfterTime.Add(-e.Settings.TerminationPeriod)) && !marked {
+		return false, e.markChildForUnregistering(s, obj, shardName, delTime)
+	}
+	return false, nil
+}
+
+// scheduleChildDeletion opens the child's deletion timeline: it stamps
+// auto-delete-after delTime out and announces the schedule.
+func (e *Engine[C]) scheduleChildDeletion(
+	s *scope,
+	obj *unstructured.Unstructured,
+	shardName string,
+	delTime time.Duration,
+) error {
+	logger := log.FromContext(s.ctx)
 
 	setDeleteAfterAnnotation(obj, delTime)
-	if updateErr := e.Update(s.ctx, obj); updateErr != nil {
+	if err := e.Update(s.ctx, obj); err != nil {
 		logger.Error(
-			updateErr,
+			err,
 			"unable to update auto-delete-after annotation",
 			"objectKind",
 			obj.GetKind(),
 			"objectName",
 			obj.GetName(),
 		)
-		return false, updateErr
+		return err
 	}
 	logger.Info(
 		"auto-delete-after annotation set",
@@ -235,9 +244,42 @@ func (e *Engine[C]) evaluateDeletionTiming(
 	metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
 	e.tracker.MarkWaiting(s.key)
 	s.mutated = true
-	return false, nil
+	return nil
 }
 
-// reconcileTerminating drains the children of a deleted parent: every child
-// is marked for service discovery unregistering, deleted after its window,
-// and only then the finalizer is removed.
+// markChildForUnregistering flags the child for service discovery removal one
+// termination period before its deadline and restarts the deadline delTime
+// out, giving service discovery a full window to converge before the delete.
+func (e *Engine[C]) markChildForUnregistering(
+	s *scope,
+	obj *unstructured.Unstructured,
+	shardName string,
+	delTime time.Duration,
+) error {
+	logger := log.FromContext(s.ctx)
+
+	e.clock.markForUnregistering(obj)
+	setDeleteAfterAnnotation(obj, delTime)
+	if err := e.Update(s.ctx, obj); err != nil {
+		logger.Error(
+			err,
+			"unable to update object with marked-for-deletion annotation",
+			"objectKind",
+			obj.GetKind(),
+			"objectName",
+			obj.GetName(),
+		)
+		return err
+	}
+	logger.Info("marked-for-deletion annotation set", "objectKind", obj.GetKind(), "objectName", obj.GetName())
+	e.eventf(
+		s,
+		status.EventMarkedForDeletion,
+		"Marked %s %s for service discovery unregistering",
+		obj.GetKind(),
+		obj.GetName(),
+	)
+	metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
+	s.mutated = true
+	return nil
+}

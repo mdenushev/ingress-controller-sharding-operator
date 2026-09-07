@@ -15,19 +15,20 @@ import (
 	"k8s.tochka.com/sharded-ingress-controller/internal/engine"
 )
 
-// Reconciler reconciles a ShardedHTTPProxy into per-shard Contour HTTPProxy
-// children.
-type Reconciler struct {
+// Controller bundles the lifecycle engine with the HTTPProxy-specific
+// adapter and renderer; the reconciliation loop itself lives in the embedded
+// engine.
+type Controller struct {
 	*engine.Engine[*contourv1.HTTPProxy]
 }
 
-func NewReconciler(
+func NewController(
 	c client.Client,
 	scheme *runtime.Scheme,
 	recorder record.EventRecorder,
 	settings engine.Settings,
-) *Reconciler {
-	return &Reconciler{
+) *Controller {
+	return &Controller{
 		Engine: engine.NewEngine(
 			c, scheme, recorder, settings,
 			newAdapter(settings),
@@ -42,7 +43,7 @@ func NewReconciler(
 	}
 }
 
-func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, parallel, qps, burst int) error {
+func (r *Controller) SetupWithManager(mgr ctrl.Manager, parallel, qps, burst int) error {
 	return engine.SetupWithManager(
 		mgr,
 		r.Engine,

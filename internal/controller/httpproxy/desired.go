@@ -54,46 +54,44 @@ func (b *renderer) RenderChildren(
 		tempShardedHTTPProxy.Spec.Template.Labels[b.settings.ServiceDiscoveryClassLabel] = plan.OldShard
 		tempShardedHTTPProxy.Spec.Template.Annotations[engine.OldShardAnnotation] = plan.OldShard
 
-		tmpProxy := b.renderHTTPProxy(tempShardedHTTPProxy, tmpName, plan.OldShard, nil)
-		tmpProxy.Labels[b.settings.RootHTTPProxyLabel] = trueValue
-		children = append(children, engine.DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: tmpProxy})
-
-		for i, host := range b.virtualHosts(tempShardedHTTPProxy) {
-			virtualHost := newVirtualHostFromTemplate(tempShardedHTTPProxy.Spec.Template.Spec.VirtualHost, host)
-			httpProxy := b.renderHTTPProxy(
-				tempShardedHTTPProxy,
-				fmt.Sprintf("%s-%d", tmpName, i),
-				plan.OldShard,
-				virtualHost,
-			)
-			children = append(children, engine.DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: httpProxy})
-		}
+		children = append(children, b.renderFamily(tempShardedHTTPProxy, tmpName, plan.OldShard, plan.Shard)...)
 	}
 
 	shardedHTTPProxy.Spec.Template.Labels[b.settings.ServiceDiscoveryClassLabel] = plan.EffectiveClass
 
+	// On a sharded class every child carries its shard number in the name;
+	// only a non-sharded (regular) class keeps the bare parent name.
 	mainName := shardedHTTPProxy.Name
-	if sharded.GetIngressClassName() != plan.Shard.Name {
+	if !plan.Regular {
 		mainName = fmt.Sprintf("%s-%d", shardedHTTPProxy.Name, plan.Shard.Number)
 	}
 	shardedHTTPProxy.SetName(mainName)
 
-	baseHTTPProxy := b.renderHTTPProxy(shardedHTTPProxy, mainName, plan.EffectiveClass, nil)
-	baseHTTPProxy.Labels[b.settings.RootHTTPProxyLabel] = trueValue
-	children = append(children, engine.DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: baseHTTPProxy})
-
-	for i, host := range b.virtualHosts(shardedHTTPProxy) {
-		virtualHost := newVirtualHostFromTemplate(shardedHTTPProxy.Spec.Template.Spec.VirtualHost, host)
-		httpProxy := b.renderHTTPProxy(
-			shardedHTTPProxy,
-			fmt.Sprintf("%s-%d", mainName, i),
-			plan.EffectiveClass,
-			virtualHost,
-		)
-		children = append(children, engine.DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: httpProxy})
-	}
+	children = append(children, b.renderFamily(shardedHTTPProxy, mainName, plan.EffectiveClass, plan.Shard)...)
 
 	return children, nil
+}
+
+// renderFamily renders one proxy family on the given class: the root proxy
+// (marked with the root label) plus one proxy per extra virtual host, each
+// including the root.
+func (b *renderer) renderFamily(
+	src *controllerv1.ShardedHTTPProxy,
+	baseName, class string,
+	shard engine.Shard,
+) []engine.DesiredChild[*contourv1.HTTPProxy] {
+	root := b.renderHTTPProxy(src, baseName, class, nil)
+	root.Labels[b.settings.RootHTTPProxyLabel] = trueValue
+	children := []engine.DesiredChild[*contourv1.HTTPProxy]{{Shard: shard, Obj: root}}
+
+	for i, host := range b.virtualHosts(src) {
+		virtualHost := newVirtualHostFromTemplate(src.Spec.Template.Spec.VirtualHost, host)
+		children = append(children, engine.DesiredChild[*contourv1.HTTPProxy]{
+			Shard: shard,
+			Obj:   b.renderHTTPProxy(src, fmt.Sprintf("%s-%d", baseName, i), class, virtualHost),
+		})
+	}
+	return children
 }
 
 // virtualHosts lists the extra hosts requested via the virtual-hosts

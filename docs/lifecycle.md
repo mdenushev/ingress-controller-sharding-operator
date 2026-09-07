@@ -100,4 +100,4 @@ implementation behind the same interface.
 | Rate limiting | `internal/scheduler/scheduler.go` |
 | Status bookkeeping, conditions, events | `internal/status/status.go` (pure helpers), `internal/engine/status.go` (status I/O) |
 | In-memory lists & metrics | `internal/engine/tracker.go` |
-| Thin per-type controllers | `internal/controller/{ingress,httpproxy}/reconciler.go` |
+| Thin per-type controllers | `internal/controller/{ingress,httpproxy}/controller.go` |

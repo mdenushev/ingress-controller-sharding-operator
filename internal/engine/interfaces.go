@@ -93,9 +93,10 @@ type DesiredChild[C client.Object] struct {
 	// object itself still carries the old class mid-migration).
 	Shard Shard
 	Obj   C
-	// AlsoBook lists extra child names recorded in the parent status for
-	// this shard, keeping mid-migration objects off the pruning list.
-	AlsoBook []string
+	// ExtraChildNames lists extra child names recorded in the parent
+	// status for this shard even though they are not rendered in this pass,
+	// keeping mid-migration objects off the pruning list.
+	ExtraChildNames []string
 }
 
 // DesiredRenderer renders the desired children of a parent for one shard.

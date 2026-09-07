@@ -60,8 +60,7 @@ func (e *Engine[C]) resolveShardPlan(s *scope, shard Shard) ShardPlan {
 		types.NamespacedName{Name: TmpChildName(s.obj.GetName(), shard.Number), Namespace: s.obj.GetNamespace()},
 		tmp,
 	)
-	switch {
-	case err == nil:
+	if err == nil {
 		// The tmp child exists: while its migration window has not passed
 		// the main child keeps the old class so traffic stays on the old
 		// shard.
@@ -69,14 +68,11 @@ func (e *Engine[C]) resolveShardPlan(s *scope, shard Shard) ShardPlan {
 			plan.OldShard = hold.OldShard
 			plan.EffectiveClass = hold.OldShard
 		}
-	case apierrors.IsNotFound(err) && conflict != "":
-		// Migration starts: the tmp child does not exist yet and the
-		// status still records the child on another shard.
-		plan.CreateTmp = true
-		plan.EffectiveClass = conflict
-	case !apierrors.IsNotFound(err):
-		// Any other error falls through: the pass continues on the new
-		// class, exactly as if no tmp child existed.
+		return plan
+	}
+	if !apierrors.IsNotFound(err) {
+		// An unexpected fetch error falls through: the pass continues on
+		// the new class, exactly as if no tmp child existed.
 		log.FromContext(s.ctx).Error(
 			err,
 			"unable to fetch tmp child, continuing on the target shard",
@@ -85,10 +81,13 @@ func (e *Engine[C]) resolveShardPlan(s *scope, shard Shard) ShardPlan {
 			"objectName",
 			TmpChildName(s.obj.GetName(), shard.Number),
 		)
+		return plan
+	}
+	if conflict != "" {
+		// Migration starts: the tmp child does not exist yet and the
+		// status still records the child on another shard.
+		plan.CreateTmp = true
+		plan.EffectiveClass = conflict
 	}
 	return plan
 }
-
-// applyChildren brings the cluster to the desired set: it creates missing
-// children, updates drifted ones and prunes children that are no longer
-// desired. A create or delete ends the pass immediately so the loop applies

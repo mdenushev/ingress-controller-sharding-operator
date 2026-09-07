@@ -65,7 +65,7 @@ func TestReconcileLifecycleToReady(t *testing.T) {
 		Build()
 	recorder := record.NewFakeRecorder(64)
 
-	r := NewReconciler(fakeClient, testScheme, recorder, settings)
+	r := NewController(fakeClient, testScheme, recorder, settings)
 
 	ctx := context.Background()
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "app"}}

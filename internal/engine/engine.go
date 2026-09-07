@@ -173,9 +173,15 @@ func (e *Engine[C]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resul
 
 	// Compare with current and fix: create/update children, then prune the
 	// ones no longer desired.
-	result := e.applyChildren(s, desired)
+	result, err := e.applyChildren(s, desired)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
-	e.publishLifecycle(s, result)
+	if publishErr := e.publishLifecycle(s, result); publishErr != nil {
+		logger.Error(publishErr, "unable to publish lifecycle status")
+		return ctrl.Result{}, publishErr
+	}
 	return result, nil
 }
 

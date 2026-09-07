@@ -65,14 +65,14 @@ func newMigratingShardedHTTPProxy() *controllerv1.ShardedHTTPProxy {
 	}
 }
 
-// newTestReconciler wires a Reconciler over a fake client that carries the
+// newTestController wires a Controller over a fake client that carries the
 // parent, the target shard's IngressClass and any pre-existing children. The
 // scheduler is stubbed out so passes never wait for a slot.
-func newTestReconciler(
+func newTestController(
 	t *testing.T,
 	sharded *controllerv1.ShardedHTTPProxy,
 	existing ...client.Object,
-) (*Reconciler, ctrl.Request) {
+) (*Controller, ctrl.Request) {
 	t.Helper()
 
 	testScheme := runtime.NewScheme()
@@ -106,14 +106,14 @@ func newTestReconciler(
 		WithObjects(append([]client.Object{sharded, shardClass}, existing...)...).
 		Build()
 
-	r := NewReconciler(fakeClient, testScheme, nil, settings)
+	r := NewController(fakeClient, testScheme, nil, settings)
 	r.Scheduler = noopScheduler{}
 
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: sharded.Namespace, Name: sharded.Name}}
 	return r, req
 }
 
-func getHTTPProxy(g Gomega, r *Reconciler, name string) *contourv1.HTTPProxy {
+func getHTTPProxy(g Gomega, r *Controller, name string) *contourv1.HTTPProxy {
 	proxy := &contourv1.HTTPProxy{}
 	g.Expect(r.Client.Get(
 		context.Background(),
@@ -132,7 +132,7 @@ func TestReconcileMigrationCreatesTmpWithOldClass(t *testing.T) {
 	g := NewWithT(t)
 	ctx := context.Background()
 
-	r, req := newTestReconciler(t, newMigratingShardedHTTPProxy())
+	r, req := newTestController(t, newMigratingShardedHTTPProxy())
 
 	// Pass 1 starts the migration: the tmp child appears on the old shard.
 	_, err := r.Reconcile(ctx, req)
@@ -179,7 +179,7 @@ func TestReconcileMigrationKeepsOldClassWhileTmpAlive(t *testing.T) {
 			Annotations: map[string]string{engine.OldShardAnnotation: testOldShardClass},
 		},
 	}
-	r, req := newTestReconciler(t, newMigratingShardedHTTPProxy(), tmp)
+	r, req := newTestController(t, newMigratingShardedHTTPProxy(), tmp)
 
 	_, err := r.Reconcile(ctx, req)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -210,7 +210,7 @@ func TestReconcileMigrationSwitchesToNewClassAfterWindow(t *testing.T) {
 			},
 		},
 	}
-	r, req := newTestReconciler(t, newMigratingShardedHTTPProxy(), tmp)
+	r, req := newTestController(t, newMigratingShardedHTTPProxy(), tmp)
 
 	_, err := r.Reconcile(ctx, req)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -265,7 +265,7 @@ func TestReconcileMigrationDoesNotChurnAutoDeleteOnMain(t *testing.T) {
 		},
 		Spec: contourv1.HTTPProxySpec{IngressClassName: testOldShardClass},
 	}
-	r, req := newTestReconciler(t, newMigratingShardedHTTPProxy(), tmp, main)
+	r, req := newTestController(t, newMigratingShardedHTTPProxy(), tmp, main)
 
 	var tmpDeleteAfter string
 	for cycle := 1; cycle <= 3; cycle++ {
