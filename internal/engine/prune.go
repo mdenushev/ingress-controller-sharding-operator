@@ -26,13 +26,11 @@ func (e *Engine[C]) pruneChildren(s *scope, currentList map[string][]map[string]
 	}
 
 	for _, obj := range childObjs.Items {
-		// A child that is still desired just stays recorded in the status —
-		// except tmp children, which always run their deletion timeline.
-		desired, shardName := desiredIn(s.shards, &obj, currentList)
+		// A child that is still desired is never pruned (applyChildren has
+		// already recorded it) — except tmp children, which always run their
+		// deletion timeline.
+		desired, shardName := isInDesiredList(s.shards, &obj, currentList)
 		if desired && !isTmpChildName(s.obj.GetName(), obj.GetName()) {
-			if statusErr := e.addChildToStatus(s, obj.GetKind(), obj.GetName(), shardName); statusErr != nil {
-				return ctrl.Result{}, statusErr
-			}
 			continue
 		}
 
@@ -54,9 +52,9 @@ func (e *Engine[C]) pruneChildren(s *scope, currentList map[string][]map[string]
 	return ctrl.Result{}, nil
 }
 
-// desiredIn reports whether the child is in the pass's desired list, and on
-// which shard.
-func desiredIn(
+// isInDesiredList reports whether the child is in the pass's desired list,
+// and on which shard.
+func isInDesiredList(
 	shards []Shard,
 	obj *unstructured.Unstructured,
 	currentList map[string][]map[string]string,
@@ -98,6 +96,11 @@ func (e *Engine[C]) pruneChild(
 		e.eventf(s, status.EventChildDeleted, "Deleted %s %s", obj.GetKind(), obj.GetName())
 		metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
 		s.mutated = true
+		// Drop the record right away instead of waiting for a later pass to
+		// notice the object is gone.
+		if statusErr := e.removeChildFromStatus(s, obj.GetName()); statusErr != nil {
+			return ctrl.Result{}, false, statusErr
+		}
 		return ctrl.Result{}, true, nil
 	}
 	// The child waits for its deletion window; keep it recorded and come

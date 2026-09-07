@@ -70,15 +70,6 @@ func (e *Engine[C]) reconcileTerminating(s *scope) (ctrl.Result, error) {
 func (e *Engine[C]) drainChild(s *scope, child *unstructured.Unstructured) (bool, error) {
 	logger := log.FromContext(s.ctx)
 
-	var shardName string
-	for shard, objStatusSlice := range s.obj.GetShardedStatus().CreatedObjects {
-		for _, objStatus := range objStatusSlice {
-			if objStatus[status.KeyName] == child.GetName() {
-				shardName = shard
-			}
-		}
-	}
-
 	deleteAfter, deleteAfterExists, err := parseDeleteAfterAnnotation(child)
 	if err != nil {
 		logger.Error(
@@ -93,55 +84,69 @@ func (e *Engine[C]) drainChild(s *scope, child *unstructured.Unstructured) (bool
 	}
 
 	if !deleteAfterExists || !e.clock.isMarkedForUnregistering(child) {
-		logger.Info(
-			"[finalizer] mark child for deletion",
+		return true, e.markChildDraining(s, child)
+	}
+	if !time.Now().After(deleteAfter) {
+		// The drain window is still running.
+		return true, nil
+	}
+	return false, e.deleteDrainedChild(s, child)
+}
+
+// markChildDraining stamps the unregister mark and the finalizer deletion
+// deadline on the child and announces the drain.
+func (e *Engine[C]) markChildDraining(s *scope, child *unstructured.Unstructured) error {
+	logger := log.FromContext(s.ctx)
+
+	logger.Info(
+		"[finalizer] mark child for deletion",
+		"objectKind",
+		child.GetKind(),
+		"objectName",
+		child.GetName(),
+	)
+	e.clock.markForUnregistering(child)
+	setDeleteAfterAnnotation(child, e.Settings.FinalizerDeletionTerminationPeriod)
+
+	if err := e.Update(s.ctx, child); err != nil {
+		logger.Error(
+			err,
+			"[finalizer] unable to set auto-delete-after and unregister annotation on child",
 			"objectKind",
 			child.GetKind(),
 			"objectName",
 			child.GetName(),
 		)
-		e.clock.markForUnregistering(child)
-		setDeleteAfterAnnotation(child, e.Settings.FinalizerDeletionTerminationPeriod)
-
-		if updateErr := e.Update(s.ctx, child); updateErr != nil {
-			logger.Error(
-				updateErr,
-				"[finalizer] unable to set auto-delete-after and unregister annotation on child",
-				"objectKind",
-				child.GetKind(),
-				"objectName",
-				child.GetName(),
-			)
-			return false, fmt.Errorf(
-				"[finalizer] unable to set auto-delete-after and unregister annotation on child: %w",
-				updateErr,
-			)
-		}
-		e.eventf(
-			s,
-			status.EventFinalizerDraining,
-			"Draining child %s %s before deletion",
-			child.GetKind(),
-			child.GetName(),
+		return fmt.Errorf(
+			"[finalizer] unable to set auto-delete-after and unregister annotation on child: %w",
+			err,
 		)
-		return true, nil
 	}
+	e.eventf(
+		s,
+		status.EventFinalizerDraining,
+		"Draining child %s %s before deletion",
+		child.GetKind(),
+		child.GetName(),
+	)
+	return nil
+}
 
-	if !time.Now().After(deleteAfter) {
-		return true, nil
-	}
+// deleteDrainedChild deletes a child whose drain window has passed.
+func (e *Engine[C]) deleteDrainedChild(s *scope, child *unstructured.Unstructured) error {
+	logger := log.FromContext(s.ctx)
 
 	logger.Info("[finalizer] deleting child", "objectKind", child.GetKind(), "objectName", child.GetName())
-	if deleteErr := e.Delete(s.ctx, child); deleteErr != nil {
+	if err := e.Delete(s.ctx, child); err != nil {
 		logger.Error(
-			deleteErr,
+			err,
 			"[finalizer] unable to delete child",
 			"objectKind",
 			child.GetKind(),
 			"objectName",
 			child.GetName(),
 		)
-		return false, deleteErr
+		return err
 	}
 	logger.Info(
 		"[finalizer] successfully deleted child from cluster",
@@ -151,8 +156,8 @@ func (e *Engine[C]) drainChild(s *scope, child *unstructured.Unstructured) (bool
 		child.GetName(),
 	)
 	e.eventf(s, status.EventChildDeleted, "Deleted child %s %s", child.GetKind(), child.GetName())
-	metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
-	return false, nil
+	metrics.ProcessingCounter.WithLabelValues(e.CtrlName, e.recordedShard(s, child.GetName())).Inc()
+	return nil
 }
 
 // removeFinalizer refreshes the parent and removes the controller finalizer

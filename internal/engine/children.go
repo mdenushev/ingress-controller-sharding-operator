@@ -50,6 +50,17 @@ func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) (ctrl.Res
 		if updateErr := e.updateChild(s, existing, child); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
+		// Record the child in the parent status: a no-op when already
+		// recorded, this also adopts children that exist in the cluster but
+		// were never recorded (e.g. after a wiped status).
+		if statusErr := e.addChildToStatus(
+			s,
+			e.Adapter.Kind(),
+			child.Obj.GetName(),
+			child.Shard.Name,
+		); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
 
 		statusList[child.Shard.Name] = append(
 			statusList[child.Shard.Name],
@@ -129,9 +140,6 @@ func (e *Engine[C]) updateChild(s *scope, existing C, child DesiredChild[C]) err
 	logger.Info("successfully updated", "objectKind", kind, "objectName", name)
 	e.tracker.markReady(s.key)
 	e.eventf(s, status.EventChildUpdated, "Updated %s %s on shard %s", kind, name, child.Shard.Name)
-	if statusErr := e.addChildToStatus(s, kind, name, child.Shard.Name); statusErr != nil {
-		return statusErr
-	}
 	e.tracker.doneWaiting(s.key)
 	metrics.ProcessingCounter.WithLabelValues(e.CtrlName, child.Shard.Name).Inc()
 	s.mutated = true
