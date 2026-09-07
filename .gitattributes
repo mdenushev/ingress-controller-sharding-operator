@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Generated code: collapsed in PR diffs and excluded from language stats
+zz_generated.*.go linguist-generated=true
+config/crd/bases/*.yaml linguist-generated=true
+config/rbac/role.yaml linguist-generated=true
