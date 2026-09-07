@@ -101,8 +101,8 @@ func (s *ShardedHTTPProxy) GetCreatedObjects() *map[string][]map[string]string {
 	return &s.Status.CreatedObjects
 }
 
-func (s *ShardedHTTPProxy) SetCreatedObjects(new map[string][]map[string]string) {
-	s.Status.CreatedObjects = new
+func (s *ShardedHTTPProxy) SetCreatedObjects(objects map[string][]map[string]string) {
+	s.Status.CreatedObjects = objects
 }
 
 func (s *ShardedHTTPProxy) GetObject() client.Object {

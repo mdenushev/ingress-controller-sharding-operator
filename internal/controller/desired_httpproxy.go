@@ -48,7 +48,7 @@ func (b *httpProxyRenderer) RenderChildren(sharded ShardedObject, plan ShardPlan
 		tempShardedHTTPProxy.Spec.Template.Annotations[OldShardAnnotation] = plan.OldShard
 
 		tmpProxy := b.renderHTTPProxy(tempShardedHTTPProxy, tmpName, plan.OldShard, nil)
-		tmpProxy.ObjectMeta.Labels[b.settings.RootHTTPProxyLabel] = "true"
+		tmpProxy.Labels[b.settings.RootHTTPProxyLabel] = "true"
 		children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: tmpProxy})
 
 		for i, host := range b.virtualHosts(tempShardedHTTPProxy) {
@@ -67,7 +67,7 @@ func (b *httpProxyRenderer) RenderChildren(sharded ShardedObject, plan ShardPlan
 	shardedHTTPProxy.SetName(mainName)
 
 	baseHTTPProxy := b.renderHTTPProxy(shardedHTTPProxy, mainName, plan.EffectiveClass, nil)
-	baseHTTPProxy.ObjectMeta.Labels[b.settings.RootHTTPProxyLabel] = "true"
+	baseHTTPProxy.Labels[b.settings.RootHTTPProxyLabel] = "true"
 	children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: baseHTTPProxy})
 
 	for i, host := range b.virtualHosts(shardedHTTPProxy) {

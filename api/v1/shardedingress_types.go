@@ -55,8 +55,8 @@ func (s *ShardedIngress) GetCreatedObjects() *map[string][]map[string]string {
 	return &s.Status.CreatedObjects
 }
 
-func (s *ShardedIngress) SetCreatedObjects(new map[string][]map[string]string) {
-	s.Status.CreatedObjects = new
+func (s *ShardedIngress) SetCreatedObjects(objects map[string][]map[string]string) {
+	s.Status.CreatedObjects = objects
 }
 
 func (s *ShardedIngress) GetObject() client.Object {

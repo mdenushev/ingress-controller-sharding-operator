@@ -21,17 +21,17 @@ func (a *httpProxyAdapter) NewObject() *contourv1.HTTPProxy {
 	return &contourv1.HTTPProxy{}
 }
 
-func (a *httpProxyAdapter) Equal(old, new *contourv1.HTTPProxy) (bool, error) {
-	return apiequality.Semantic.DeepEqual(old.Annotations, new.Annotations) &&
-		apiequality.Semantic.DeepEqual(old.Spec, new.Spec) &&
-		apiequality.Semantic.DeepEqual(old.Labels, new.Labels) &&
-		apiequality.Semantic.DeepEqual(old.OwnerReferences, new.OwnerReferences), nil
+func (a *httpProxyAdapter) Equal(existing, desired *contourv1.HTTPProxy) (bool, error) {
+	return apiequality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) &&
+		apiequality.Semantic.DeepEqual(existing.Spec, desired.Spec) &&
+		apiequality.Semantic.DeepEqual(existing.Labels, desired.Labels) &&
+		apiequality.Semantic.DeepEqual(existing.OwnerReferences, desired.OwnerReferences), nil
 }
 
-func (a *httpProxyAdapter) Merge(old, new *contourv1.HTTPProxy) *contourv1.HTTPProxy {
-	old.Spec = new.Spec
-	old.Annotations = new.Annotations
-	old.Labels = new.Labels
-	old.OwnerReferences = new.OwnerReferences
-	return old
+func (a *httpProxyAdapter) Merge(existing, desired *contourv1.HTTPProxy) *contourv1.HTTPProxy {
+	existing.Spec = desired.Spec
+	existing.Annotations = desired.Annotations
+	existing.Labels = desired.Labels
+	existing.OwnerReferences = desired.OwnerReferences
+	return existing
 }

@@ -129,7 +129,7 @@ func main() {
 			settings,
 		)
 
-		if err := shardedIngressReconciler.SetupWithManager(mgr, 1, conf.RateLimit.ApiRateLimit, conf.RateLimit.ApiBurstLimit); err != nil {
+		if err := shardedIngressReconciler.SetupWithManager(mgr, 1, conf.RateLimit.APIRateLimit, conf.RateLimit.APIBurstLimit); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "ShardedIngress")
 			os.Exit(1)
 		}
@@ -145,7 +145,7 @@ func main() {
 			settings,
 		)
 
-		if err := shardedHTTPProxyReconciler.SetupWithManager(mgr, 1, conf.RateLimit.ApiRateLimit, conf.RateLimit.ApiBurstLimit); err != nil {
+		if err := shardedHTTPProxyReconciler.SetupWithManager(mgr, 1, conf.RateLimit.APIRateLimit, conf.RateLimit.APIBurstLimit); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "ShardedHTTPProxy")
 			os.Exit(1)
 		}

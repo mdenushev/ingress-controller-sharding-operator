@@ -1,0 +1,64 @@
+version: "2"
+
+run:
+  timeout: 5m
+  build-tags:
+    - e2e
+
+linters:
+  # The standard set (errcheck, govet, ineffassign, staticcheck, unused)
+  # plus a few low-noise, high-value linters.
+  default: standard
+  enable:
+    - copyloopvar
+    - misspell
+    - nolintlint
+    - revive
+    - unconvert
+    - unparam
+    - whitespace
+  settings:
+    revive:
+      rules:
+        # Defaults minus the mandatory-comment rules: the codebase documents
+        # the important parts, but does not comment every exported symbol.
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: var-declaration
+        - name: var-naming
+  exclusions:
+    generated: lax
+    presets:
+      - common-false-positives
+      - std-error-handling
+    rules:
+      # Ginkgo/Gomega suites are conventionally dot-imported.
+      - path: _test\.go
+        linters:
+          - revive
+        text: should not use dot imports
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - k8s.tochka.com/sharded-ingress-controller

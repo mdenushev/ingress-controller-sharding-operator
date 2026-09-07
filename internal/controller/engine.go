@@ -115,7 +115,7 @@ func (e *Engine[C]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resul
 		return ctrl.Result{}, err
 	}
 
-	s := &scope{ctx: ctx, req: req, key: req.NamespacedName.String(), obj: e.NewSharded()}
+	s := &scope{ctx: ctx, req: req, key: req.String(), obj: e.NewSharded()}
 
 	if err := e.Get(ctx, req.NamespacedName, s.obj); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -643,7 +643,7 @@ func (e *Engine[C]) publishLifecycle(s *scope, result ctrl.Result) {
 			condition(controllerv1.ConditionResharding, true, "MigrationInProgress", "Children are migrating to their new shard")); err != nil {
 			logger.Error(err, "unable to publish lifecycle status")
 		}
-	case s.mutated || result.RequeueAfter > 0 || result.Requeue: //nolint:staticcheck // Requeue kept for parity with requeue-now results
+	case s.mutated || result.RequeueAfter > 0 || result.Requeue:
 		if err := e.setLifecycle(s, controllerv1.PhaseProvisioning,
 			condition(controllerv1.ConditionReady, false, "Provisioning", "Children are being applied"),
 			condition(controllerv1.ConditionResharding, false, "NoMigration", "No shard migration in progress")); err != nil {

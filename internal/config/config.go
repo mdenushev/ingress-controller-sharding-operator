@@ -28,8 +28,8 @@ type ConfigType struct {
 			Object time.Duration `mapstructure:"object"`
 			Shard  time.Duration `mapstructure:"shard"`
 		} `mapstructure:"updateCooldown"`
-		ApiRateLimit  int `mapstructure:"apiRateLimit"`
-		ApiBurstLimit int `mapstructure:"apiBurstLimit"`
+		APIRateLimit  int `mapstructure:"apiRateLimit"`
+		APIBurstLimit int `mapstructure:"apiBurstLimit"`
 	} `mapstructure:"rateLimit"`
 	Finalizer struct {
 		Key                       string        `mapstructure:"key"`
