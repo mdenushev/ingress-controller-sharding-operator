@@ -80,14 +80,16 @@ Before mutating anything, a pass books a slot from the `Scheduler`
 historical behavior: creations/updates on one shard are spaced by
 `rateLimit.updateCooldown.shard`, deletions are grouped into
 `T`-sized windows, protecting the ingress controllers from config-reload
-storms. The booking is announced with an `ApplyScheduled` event. A fair
-per-shard queue can replace this implementation behind the same interface.
+storms. A pass with nothing to throttle (no pending shard change) proceeds
+immediately without booking. The booking is announced with an
+`ApplyScheduled` event. A fair per-shard queue can replace this
+implementation behind the same interface.
 
 ## Code map
 
 | Concern | Where |
 |---------|-------|
-| Lifecycle engine (one generic `Reconcile`) | `internal/controller/engine.go` |
+| Lifecycle engine (one generic `Reconcile`) | `internal/controller/engine.go` (core), `engine_desired.go`, `engine_children.go`, `engine_prune.go`, `engine_terminating.go` |
 | Interfaces (`ChildAdapter`, `DesiredRenderer`, `ShardSelector`, `Scheduler`) | `internal/controller/interfaces.go` |
 | Shard selection | `internal/controller/shards.go` |
 | Desired-state rendering | `internal/controller/desired_*.go` |

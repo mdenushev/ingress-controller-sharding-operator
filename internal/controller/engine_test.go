@@ -20,9 +20,9 @@ import (
 )
 
 // TestReconcileLifecycleToReady drives a fresh ShardedHTTPProxy through the
-// whole loop: Pending (waiting for an apply slot) -> Provisioning (child
-// created) -> Ready, checking the phase, the Ready condition, the created
-// child and the recorded events along the way.
+// whole loop: Provisioning (the first creation needs no apply slot, the child
+// is created right away) -> Ready, checking the phase, the Ready condition,
+// the created child and the recorded events along the way.
 func TestReconcileLifecycleToReady(t *testing.T) {
 	g := NewWithT(t)
 
@@ -94,7 +94,6 @@ func TestReconcileLifecycleToReady(t *testing.T) {
 	}
 
 	g.Expect(phases).To(Equal([]controllerv1.ShardedPhase{
-		controllerv1.PhasePending,
 		controllerv1.PhaseProvisioning,
 		controllerv1.PhaseReady,
 	}))

@@ -118,7 +118,9 @@ func (s *cooldownScheduler) Schedule(
 	case actionDelete:
 		result = ctrl.Result{RequeueAfter: time.Until(s.bookDeleteSlot(objKey, shard, logger))}
 	case actionNone:
-		result = ctrl.Result{Requeue: true}
+		// Nothing to create or delete on any shard: no slot needed, the
+		// pass proceeds right away instead of burning a requeue.
+		return ctrl.Result{}, false
 	}
 
 	s.tracker.markWaiting(objKey)
