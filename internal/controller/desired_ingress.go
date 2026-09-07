@@ -19,7 +19,10 @@ func newIngressRenderer(settings Settings) *ingressRenderer {
 	return &ingressRenderer{settings: settings}
 }
 
-func (b *ingressRenderer) RenderChildren(sharded ShardedObject, plan ShardPlan) ([]DesiredChild[*networkingv1.Ingress], error) {
+func (b *ingressRenderer) RenderChildren(
+	sharded ShardedObject,
+	plan ShardPlan,
+) ([]DesiredChild[*networkingv1.Ingress], error) {
 	src, ok := sharded.(*controllerv1.ShardedIngress)
 	if !ok {
 		return nil, fmt.Errorf("unsupported sharded object type: %T", sharded)

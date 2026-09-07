@@ -21,7 +21,10 @@ func newHTTPProxyRenderer(settings Settings) *httpProxyRenderer {
 	return &httpProxyRenderer{settings: settings}
 }
 
-func (b *httpProxyRenderer) RenderChildren(sharded ShardedObject, plan ShardPlan) ([]DesiredChild[*contourv1.HTTPProxy], error) {
+func (b *httpProxyRenderer) RenderChildren(
+	sharded ShardedObject,
+	plan ShardPlan,
+) ([]DesiredChild[*contourv1.HTTPProxy], error) {
 	src, ok := sharded.(*controllerv1.ShardedHTTPProxy)
 	if !ok {
 		return nil, fmt.Errorf("unsupported sharded object type: %T", sharded)
@@ -48,12 +51,17 @@ func (b *httpProxyRenderer) RenderChildren(sharded ShardedObject, plan ShardPlan
 		tempShardedHTTPProxy.Spec.Template.Annotations[OldShardAnnotation] = plan.OldShard
 
 		tmpProxy := b.renderHTTPProxy(tempShardedHTTPProxy, tmpName, plan.OldShard, nil)
-		tmpProxy.Labels[b.settings.RootHTTPProxyLabel] = "true"
+		tmpProxy.Labels[b.settings.RootHTTPProxyLabel] = trueValue
 		children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: tmpProxy})
 
 		for i, host := range b.virtualHosts(tempShardedHTTPProxy) {
 			virtualHost := newVirtualHostFromTemplate(tempShardedHTTPProxy.Spec.Template.Spec.VirtualHost, host)
-			httpProxy := b.renderHTTPProxy(tempShardedHTTPProxy, fmt.Sprintf("%s-%d", tmpName, i), plan.OldShard, virtualHost)
+			httpProxy := b.renderHTTPProxy(
+				tempShardedHTTPProxy,
+				fmt.Sprintf("%s-%d", tmpName, i),
+				plan.OldShard,
+				virtualHost,
+			)
 			children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: httpProxy})
 		}
 	}
@@ -67,12 +75,17 @@ func (b *httpProxyRenderer) RenderChildren(sharded ShardedObject, plan ShardPlan
 	shardedHTTPProxy.SetName(mainName)
 
 	baseHTTPProxy := b.renderHTTPProxy(shardedHTTPProxy, mainName, plan.EffectiveClass, nil)
-	baseHTTPProxy.Labels[b.settings.RootHTTPProxyLabel] = "true"
+	baseHTTPProxy.Labels[b.settings.RootHTTPProxyLabel] = trueValue
 	children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: baseHTTPProxy})
 
 	for i, host := range b.virtualHosts(shardedHTTPProxy) {
 		virtualHost := newVirtualHostFromTemplate(shardedHTTPProxy.Spec.Template.Spec.VirtualHost, host)
-		httpProxy := b.renderHTTPProxy(shardedHTTPProxy, fmt.Sprintf("%s-%d", mainName, i), plan.EffectiveClass, virtualHost)
+		httpProxy := b.renderHTTPProxy(
+			shardedHTTPProxy,
+			fmt.Sprintf("%s-%d", mainName, i),
+			plan.EffectiveClass,
+			virtualHost,
+		)
 		children = append(children, DesiredChild[*contourv1.HTTPProxy]{Shard: plan.Shard, Obj: httpProxy})
 	}
 
@@ -100,7 +113,11 @@ func newVirtualHostFromTemplate(template *contourv1.VirtualHost, host string) *c
 	return virtualHost
 }
 
-func (b *httpProxyRenderer) renderHTTPProxy(shardedHTTPProxy *controllerv1.ShardedHTTPProxy, name, ingressClass string, virtualHost *contourv1.VirtualHost) *contourv1.HTTPProxy {
+func (b *httpProxyRenderer) renderHTTPProxy(
+	shardedHTTPProxy *controllerv1.ShardedHTTPProxy,
+	name, ingressClass string,
+	virtualHost *contourv1.VirtualHost,
+) *contourv1.HTTPProxy {
 	httpProxy := &contourv1.HTTPProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,

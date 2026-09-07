@@ -79,7 +79,7 @@ func TestReconcileLifecycleToReady(t *testing.T) {
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "app"}}
 
 	var phases []controllerv1.ShardedPhase
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		_, err := engine.Reconcile(ctx, req)
 		g.Expect(err).NotTo(HaveOccurred(), "pass %d", i)
 

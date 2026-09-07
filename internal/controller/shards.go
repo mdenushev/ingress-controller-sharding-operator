@@ -21,21 +21,21 @@ func getShardInfo(name, className string, shardSettings map[string]int, useAllSh
 	if !ok {
 		return []Shard{{Number: 0, Name: className}}, true, fmt.Errorf("shard type %s not found in config", className)
 	}
-	if maxShards == 0 {
+	if maxShards <= 0 {
 		return []Shard{{Number: 0, Name: className}}, true, nil
 	}
 
 	var shards []Shard
 
 	if useAllShards {
-		for i := 0; i < maxShards; i++ {
+		for i := range maxShards {
 			shards = append(shards, Shard{Number: i, Name: fmt.Sprintf("%s-%d", className, i)})
 		}
 		return shards, false, nil
 	}
 
 	hash := xxhash.Sum64String(name)
-	shardNumber := int(hash % uint64(maxShards))
+	shardNumber := int(hash % uint64(maxShards)) //nolint:gosec // maxShards is checked positive above
 	shardName := fmt.Sprintf("%s-%d", className, shardNumber)
 	return []Shard{{Number: shardNumber, Name: shardName}}, false, nil
 }

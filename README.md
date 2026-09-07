@@ -32,7 +32,7 @@ The parent objects expose their lifecycle state:
 
 ## Testing
 
-- `make lint` — golangci-lint with the base rule set from `.golangci.yml` (runs in CI on every PR); `make lint-fix` applies the auto-fixable findings
+- `make lint` — golangci-lint, config based on the [golden config](https://github.com/maratori/golangci-lint-config) with documented project deviations in `.golangci.yml` (runs in CI on every PR); `make lint-fix` applies the auto-fixable findings
 - `make test` — unit tests (runs in CI on every PR)
 - `make test-e2e` — e2e suite against the cluster from the current kubeconfig; the operator must be deployed with `test/e2e/manifests/operator.yaml` first. CI runs it on a kind cluster with an image built from the PR, so it also works in forks
 - every non-main branch push builds a test image at `ghcr.io/<owner>/ingress-controller-sharding-operator` (works in forks via `GITHUB_TOKEN`)

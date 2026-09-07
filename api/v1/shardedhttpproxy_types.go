@@ -17,7 +17,7 @@ type HTTPProxyTemplateSpec struct {
 	Spec contourv1.HTTPProxySpec `json:"spec,omitempty"`
 }
 
-// ShardedHTTPProxySpec defines the desired state of ShardedHTTPProxy
+// ShardedHTTPProxySpec defines the desired state of ShardedHTTPProxy.
 type ShardedHTTPProxySpec struct {
 	Template HTTPProxyTemplateSpec `json:"template,omitempty"`
 }
@@ -48,7 +48,7 @@ const (
 	ConditionResharding = "Resharding"
 )
 
-// ShardedStatus defines the observed state of sharded objects
+// ShardedStatus defines the observed state of sharded objects.
 type ShardedStatus struct {
 	// CreatedObjects maps a shard name to the child objects created on it.
 	// +kubebuilder:default:={}
@@ -75,7 +75,7 @@ type ShardedStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Lifecycle phase of the sharded object"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status",description="Ready condition"
 
-// ShardedHTTPProxy is the Schema for the shardedhttpproxies API
+// ShardedHTTPProxy is the Schema for the shardedhttpproxies API.
 type ShardedHTTPProxy struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -86,11 +86,12 @@ type ShardedHTTPProxy struct {
 
 //+kubebuilder:object:root=true
 
-// ShardedHTTPProxyList contains a list of ShardedHTTPProxy
+// ShardedHTTPProxyList contains a list of ShardedHTTPProxy.
 type ShardedHTTPProxyList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []ShardedHTTPProxy `json:"items"`
+
+	Items []ShardedHTTPProxy `json:"items"`
 }
 
 func init() {

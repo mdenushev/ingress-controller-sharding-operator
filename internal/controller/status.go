@@ -13,6 +13,12 @@ import (
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
 )
 
+// Keys of the per-child records in status.createdObjects.
+const (
+	statusKeyKind = "kind"
+	statusKeyName = "name"
+)
+
 // Event reasons emitted on the parent objects.
 const (
 	EventChildCreated      = "ChildCreated"
@@ -30,7 +36,7 @@ const (
 )
 
 // eventf records a Normal kube event on the parent when a recorder is wired.
-func (e *Engine[C]) eventf(s *scope, reason, format string, args ...interface{}) {
+func (e *Engine[C]) eventf(s *scope, reason, format string, args ...any) {
 	if e.Recorder == nil {
 		return
 	}
@@ -38,7 +44,7 @@ func (e *Engine[C]) eventf(s *scope, reason, format string, args ...interface{})
 }
 
 // warnf records a Warning kube event on the parent when a recorder is wired.
-func (e *Engine[C]) warnf(s *scope, reason, format string, args ...interface{}) {
+func (e *Engine[C]) warnf(s *scope, reason, format string, args ...any) {
 	if e.Recorder == nil {
 		return
 	}
@@ -48,7 +54,7 @@ func (e *Engine[C]) warnf(s *scope, reason, format string, args ...interface{}) 
 func findInStatus(shard, kind, name string, createdObjects *map[string][]map[string]string) bool {
 	if objList, ok := (*createdObjects)[shard]; ok {
 		for _, obj := range objList {
-			if obj["kind"] == kind && obj["name"] == name {
+			if obj[statusKeyKind] == kind && obj[statusKeyName] == name {
 				return true
 			}
 		}
@@ -62,7 +68,7 @@ func findInStatus(shard, kind, name string, createdObjects *map[string][]map[str
 func (e *Engine[C]) updateStatusWithRetry(s *scope, mutate func() error) error {
 	maxRetries := 5
 	var err error
-	for i := 0; i < maxRetries; i++ {
+	for range maxRetries {
 		err = mutate()
 		if err == nil {
 			return nil
@@ -72,7 +78,11 @@ func (e *Engine[C]) updateStatusWithRetry(s *scope, mutate func() error) error {
 		}
 		// The object has been modified by someone else, fetch the latest
 		// version and try again.
-		if getErr := e.Get(s.ctx, types.NamespacedName{Name: s.obj.GetName(), Namespace: s.obj.GetNamespace()}, s.obj); getErr != nil {
+		if getErr := e.Get(
+			s.ctx,
+			types.NamespacedName{Name: s.obj.GetName(), Namespace: s.obj.GetNamespace()},
+			s.obj,
+		); getErr != nil {
 			return getErr
 		}
 	}
@@ -95,7 +105,10 @@ func (e *Engine[C]) addChildToStatus(s *scope, kind, name, shardName string) err
 			if createdObjects == nil {
 				createdObjects = make(map[string][]map[string]string)
 			}
-			createdObjects[shardName] = append(createdObjects[shardName], map[string]string{"kind": kind, "name": name})
+			createdObjects[shardName] = append(
+				createdObjects[shardName],
+				map[string]string{statusKeyKind: kind, statusKeyName: name},
+			)
 
 			// Clean up empty entries
 			for key, value := range createdObjects {
@@ -106,7 +119,7 @@ func (e *Engine[C]) addChildToStatus(s *scope, kind, name, shardName string) err
 
 			// Keep the list stable for readers and comparisons.
 			sort.Slice(createdObjects[shardName], func(i, j int) bool {
-				return createdObjects[shardName][i]["name"] < createdObjects[shardName][j]["name"]
+				return createdObjects[shardName][i][statusKeyName] < createdObjects[shardName][j][statusKeyName]
 			})
 
 			s.obj.GetShardedStatus().CreatedObjects = createdObjects
@@ -127,7 +140,7 @@ func (e *Engine[C]) removeChildFromStatus(s *scope, name string) error {
 		status := s.obj.GetShardedStatus()
 		for key, valSlice := range status.CreatedObjects {
 			for i, valMap := range valSlice {
-				if valMap["name"] == name {
+				if valMap[statusKeyName] == name {
 					status.CreatedObjects[key] = append(valSlice[:i], valSlice[i+1:]...)
 					break
 				}

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -50,6 +51,7 @@ const (
 // C is the concrete child type (*networkingv1.Ingress, *contourv1.HTTPProxy).
 type Engine[C client.Object] struct {
 	client.Client
+
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	Settings Settings
@@ -70,7 +72,16 @@ type Engine[C client.Object] struct {
 }
 
 // NewEngine wires an Engine for one parent/child type pair.
-func NewEngine[C client.Object](c client.Client, scheme *runtime.Scheme, recorder record.EventRecorder, settings Settings, adapter ChildAdapter[C], renderer DesiredRenderer[C], newSharded func() ShardedObject, ctrlName string) *Engine[C] {
+func NewEngine[C client.Object](
+	c client.Client,
+	scheme *runtime.Scheme,
+	recorder record.EventRecorder,
+	settings Settings,
+	adapter ChildAdapter[C],
+	renderer DesiredRenderer[C],
+	newSharded func() ShardedObject,
+	ctrlName string,
+) *Engine[C] {
 	tracker := newStateTracker(ctrlName)
 	return &Engine[C]{
 		Client:     c,
@@ -127,22 +138,16 @@ func (e *Engine[C]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resul
 		return ctrl.Result{}, err
 	}
 
-	// If object doesn't have finalizer — set finalizer
-	if s.obj.GetDeletionTimestamp().IsZero() && !controllerutil.ContainsFinalizer(s.obj, e.Settings.FinalizerKey) {
-		controllerutil.AddFinalizer(s.obj, e.Settings.FinalizerKey)
-		if err := e.Update(ctx, s.obj); err != nil {
-			logger.Error(err, "unable to set controller finalizer")
-			return ctrl.Result{}, fmt.Errorf("cannot set controller finalizer: %w", err)
-		}
+	if err := e.ensureFinalizer(s); err != nil {
+		logger.Error(err, "unable to set controller finalizer")
+		return ctrl.Result{}, err
 	}
 
 	if !s.obj.GetDeletionTimestamp().IsZero() {
 		return e.reconcileTerminating(s)
 	}
 
-	if val := s.obj.GetAnnotations()[e.Settings.AllShardsPlacementAnnotation]; val == "true" {
-		s.useAllShards = true
-	}
+	s.useAllShards = s.obj.GetAnnotations()[e.Settings.AllShardsPlacementAnnotation] == trueValue
 
 	var err error
 	s.shards, s.regular, err = e.Selector.ShardsFor(s.obj, s.useAllShards)
@@ -151,21 +156,8 @@ func (e *Engine[C]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resul
 		return ctrl.Result{}, nil
 	}
 
-	// Rate limiting: every pass that is not already booked asks the
-	// scheduler for a slot first and requeues until the slot arrives.
-	if !e.tracker.isWaiting(s.key) {
-		result, handled := e.Scheduler.Schedule(s.key, s.obj.GetShardedStatus(), s.shards, logger)
-		if handled {
-			if result.RequeueAfter > time.Second {
-				e.eventf(s, EventApplyScheduled, "Apply on shard scheduled in %s", result.RequeueAfter.Round(time.Second))
-			}
-			if s.obj.GetShardedStatus().Phase == "" {
-				_ = e.setLifecycle(s, controllerv1.PhasePending,
-					condition(controllerv1.ConditionReady, false, "Pending", "Waiting for the first apply slot"),
-					condition(controllerv1.ConditionResharding, false, "NoMigration", "No shard migration in progress"))
-			}
-			return result, nil
-		}
+	if result, waiting := e.scheduleApply(s, logger); waiting {
+		return result, nil
 	}
 
 	// Compute desired: spec from the parent, shard from the selector,
@@ -185,6 +177,41 @@ func (e *Engine[C]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resul
 
 	e.publishLifecycle(s, result)
 	return result, err
+}
+
+// ensureFinalizer sets the controller finalizer on a live parent that does
+// not carry it yet.
+func (e *Engine[C]) ensureFinalizer(s *scope) error {
+	if !s.obj.GetDeletionTimestamp().IsZero() || controllerutil.ContainsFinalizer(s.obj, e.Settings.FinalizerKey) {
+		return nil
+	}
+	controllerutil.AddFinalizer(s.obj, e.Settings.FinalizerKey)
+	if err := e.Update(s.ctx, s.obj); err != nil {
+		return fmt.Errorf("cannot set controller finalizer: %w", err)
+	}
+	return nil
+}
+
+// scheduleApply implements the rate limiting: every pass that is not already
+// booked asks the scheduler for a slot first. waiting is true when the pass
+// must requeue with the returned result until the slot arrives.
+func (e *Engine[C]) scheduleApply(s *scope, logger logr.Logger) (ctrl.Result, bool) {
+	if e.tracker.isWaiting(s.key) {
+		return ctrl.Result{}, false
+	}
+	result, handled := e.Scheduler.Schedule(s.key, s.obj.GetShardedStatus(), s.shards, logger)
+	if !handled {
+		return ctrl.Result{}, false
+	}
+	if result.RequeueAfter > time.Second {
+		e.eventf(s, EventApplyScheduled, "Apply on shard scheduled in %s", result.RequeueAfter.Round(time.Second))
+	}
+	if s.obj.GetShardedStatus().Phase == "" {
+		_ = e.setLifecycle(s, controllerv1.PhasePending,
+			condition(controllerv1.ConditionReady, false, "Pending", "Waiting for the first apply slot"),
+			condition(controllerv1.ConditionResharding, false, "NoMigration", "No shard migration in progress"))
+	}
+	return result, true
 }
 
 // ensureInitialized discovers the cluster shards once before the first pass.
@@ -215,7 +242,13 @@ func (e *Engine[C]) computeDesired(s *scope) ([]DesiredChild[C], error) {
 			s.resharding = true
 		}
 		if plan.CreateTmp {
-			e.eventf(s, EventReshardingStarted, "Resharding from %s to %s: creating tmp child to keep the old shard serving", plan.OldShard, shard.Name)
+			e.eventf(
+				s,
+				EventReshardingStarted,
+				"Resharding from %s to %s: creating tmp child to keep the old shard serving",
+				plan.OldShard,
+				shard.Name,
+			)
 		}
 		children, err := e.Renderer.RenderChildren(s.obj, plan)
 		if err != nil {
@@ -242,24 +275,28 @@ func (e *Engine[C]) resolveShardPlan(s *scope, shard Shard) (ShardPlan, error) {
 	plan.OldShard = conflict
 
 	tmp := e.Adapter.NewObject()
-	err := e.Get(s.ctx, types.NamespacedName{Name: tmpChildName(s.obj.GetName(), shard.Number), Namespace: s.obj.GetNamespace()}, tmp)
-	if err != nil {
-		if apierrors.IsNotFound(err) && conflict != "" {
-			// Migration starts: the tmp child does not exist yet and
-			// the status still records the child on another shard.
-			plan.CreateTmp = true
-			plan.EffectiveClass = conflict
+	err := e.Get(
+		s.ctx,
+		types.NamespacedName{Name: tmpChildName(s.obj.GetName(), shard.Number), Namespace: s.obj.GetNamespace()},
+		tmp,
+	)
+	switch {
+	case err == nil:
+		// The tmp child exists: while its migration window has not passed
+		// the main child keeps the old class so traffic stays on the old
+		// shard.
+		if hold := e.clock.holdOldShard(tmp.GetAnnotations()); hold.Active {
+			plan.OldShard = hold.OldShard
+			plan.EffectiveClass = hold.OldShard
 		}
-		// Any other error falls through: the pass continues on the
-		// new class, exactly as if no tmp child existed.
-		return plan, nil
-	}
-
-	// The tmp child exists: while its migration window has not passed the
-	// main child keeps the old class so traffic stays on the old shard.
-	if hold := e.clock.holdOldShard(tmp.GetAnnotations()); hold.Active {
-		plan.OldShard = hold.OldShard
-		plan.EffectiveClass = hold.OldShard
+	case apierrors.IsNotFound(err) && conflict != "":
+		// Migration starts: the tmp child does not exist yet and the
+		// status still records the child on another shard.
+		plan.CreateTmp = true
+		plan.EffectiveClass = conflict
+	default:
+		// Any other error falls through: the pass continues on the new
+		// class, exactly as if no tmp child existed.
 	}
 	return plan, nil
 }
@@ -280,27 +317,58 @@ func (e *Engine[C]) applyChildren(s *scope, desired []DesiredChild[C]) (ctrl.Res
 	for _, current := range desired {
 		found := e.Adapter.NewObject()
 		if err := ctrl.SetControllerReference(s.obj, current.Obj, e.Scheme); err != nil {
-			logger.Error(err, "unable to set controller reference", "objectKind", e.Adapter.Kind(), "objectName", current.Obj.GetName())
+			logger.Error(
+				err,
+				"unable to set controller reference",
+				"objectKind",
+				e.Adapter.Kind(),
+				"objectName",
+				current.Obj.GetName(),
+			)
 		}
-		err := e.Get(s.ctx, types.NamespacedName{Name: current.Obj.GetName(), Namespace: current.Obj.GetNamespace()}, found)
-		if err != nil {
-			if apierrors.IsNotFound(err) {
-				result, err := e.createChild(s, current)
-				if err != nil {
-					logger.Error(err, "unable to create", "objectKind", e.Adapter.Kind(), "objectName", current.Obj.GetName())
-				}
-				return result, nil
+		err := e.Get(
+			s.ctx,
+			types.NamespacedName{Name: current.Obj.GetName(), Namespace: current.Obj.GetNamespace()},
+			found,
+		)
+		switch {
+		case apierrors.IsNotFound(err):
+			result, createErr := e.createChild(s, current)
+			if createErr != nil {
+				logger.Error(
+					createErr,
+					"unable to create",
+					"objectKind",
+					e.Adapter.Kind(),
+					"objectName",
+					current.Obj.GetName(),
+				)
 			}
+			return result, nil
+		case err != nil:
 			logger.Error(err, "unable to get", "objectKind", e.Adapter.Kind(), "objectName", current.Obj.GetName())
-		} else {
-			if err := e.updateChild(s, found, current); err != nil {
-				logger.Error(err, "unable to update", "objectKind", e.Adapter.Kind(), "objectName", current.Obj.GetName())
+		default:
+			if updateErr := e.updateChild(s, found, current); updateErr != nil {
+				logger.Error(
+					updateErr,
+					"unable to update",
+					"objectKind",
+					e.Adapter.Kind(),
+					"objectName",
+					current.Obj.GetName(),
+				)
 			}
 		}
 
-		statusList[current.Shard.Name] = append(statusList[current.Shard.Name], map[string]string{"kind": e.Adapter.Kind(), "name": current.Obj.GetName()})
+		statusList[current.Shard.Name] = append(
+			statusList[current.Shard.Name],
+			map[string]string{statusKeyKind: e.Adapter.Kind(), statusKeyName: current.Obj.GetName()},
+		)
 		for _, name := range current.AlsoBook {
-			statusList[current.Shard.Name] = append(statusList[current.Shard.Name], map[string]string{"kind": e.Adapter.Kind(), "name": name})
+			statusList[current.Shard.Name] = append(
+				statusList[current.Shard.Name],
+				map[string]string{statusKeyKind: e.Adapter.Kind(), statusKeyName: name},
+			)
 		}
 	}
 
@@ -326,7 +394,13 @@ func (e *Engine[C]) createChild(s *scope, child DesiredChild[C]) (ctrl.Result, e
 	logger.Info("successfully created", "objectKind", kind, "objectName", name)
 	e.tracker.markReady(s.key)
 	if isTmpChildName(s.obj.GetName(), name) {
-		e.eventf(s, EventTmpChildCreated, "Created tmp %s %s to keep the old shard serving during migration", kind, name)
+		e.eventf(
+			s,
+			EventTmpChildCreated,
+			"Created tmp %s %s to keep the old shard serving during migration",
+			kind,
+			name,
+		)
 	} else {
 		e.eventf(s, EventChildCreated, "Created %s %s on shard %s", kind, name, child.Shard.Name)
 	}
@@ -344,7 +418,12 @@ func (e *Engine[C]) updateChild(s *scope, existing C, child DesiredChild[C]) err
 	kind := e.Adapter.Kind()
 	name := child.Obj.GetName()
 
-	equal, err := e.Adapter.Equal(existing.DeepCopyObject().(C), child.Obj.DeepCopyObject().(C))
+	existingCopy, okExisting := existing.DeepCopyObject().(C)
+	desiredCopy, okDesired := child.Obj.DeepCopyObject().(C)
+	if !okExisting || !okDesired {
+		return fmt.Errorf("unexpected child object type %T", existing)
+	}
+	equal, err := e.Adapter.Equal(existingCopy, desiredCopy)
 	if err != nil {
 		logger.Error(err, "unable to compare", "objectKind", kind, "objectName", name)
 		return err
@@ -354,17 +433,17 @@ func (e *Engine[C]) updateChild(s *scope, existing C, child DesiredChild[C]) err
 	}
 
 	merged := e.Adapter.Merge(existing, child.Obj)
-	if err := e.Update(s.ctx, merged); err != nil {
-		logger.Error(err, "unable to update", "objectKind", kind, "objectName", name)
+	if updateErr := e.Update(s.ctx, merged); updateErr != nil {
+		logger.Error(updateErr, "unable to update", "objectKind", kind, "objectName", name)
 		e.tracker.markErrored(s.key)
-		e.warnf(s, EventChildApplyFailed, "Unable to update %s %s: %v", kind, name, err)
-		return err
+		e.warnf(s, EventChildApplyFailed, "Unable to update %s %s: %v", kind, name, updateErr)
+		return updateErr
 	}
 	logger.Info("successfully updated", "objectKind", kind, "objectName", name)
 	e.tracker.markReady(s.key)
 	e.eventf(s, EventChildUpdated, "Updated %s %s on shard %s", kind, name, child.Shard.Name)
-	if err := e.addChildToStatus(s, kind, name, child.Shard.Name); err != nil {
-		return err
+	if statusErr := e.addChildToStatus(s, kind, name, child.Shard.Name); statusErr != nil {
+		return statusErr
 	}
 	e.tracker.doneWaiting(s.key)
 	metrics.ProcessingCounter.WithLabelValues(e.CtrlName, child.Shard.Name).Inc()
@@ -399,7 +478,6 @@ func (e *Engine[C]) listChildren(s *scope) (unstructured.UnstructuredList, error
 // whose objects are gone.
 func (e *Engine[C]) pruneChildren(s *scope, currentList map[string][]map[string]string) (ctrl.Result, error) {
 	logger := log.FromContext(s.ctx)
-	status := s.obj.GetShardedStatus()
 
 	childObjs, err := e.listChildren(s)
 	if err != nil {
@@ -408,95 +486,147 @@ func (e *Engine[C]) pruneChildren(s *scope, currentList map[string][]map[string]
 	}
 
 	for _, obj := range childObjs.Items {
-		keep := false
-		var shardName string
-		for _, shard := range s.shards {
-			if findInStatus(shard.Name, obj.GetKind(), obj.GetName(), &currentList) {
-				keep = true
-				shardName = shard.Name
-				break
-			}
+		result, done, pruneErr := e.pruneChild(s, &obj, currentList)
+		if pruneErr != nil {
+			return ctrl.Result{}, pruneErr
 		}
-
-		// tmp children always run their deletion timeline, kept or not.
-		if !keep || isTmpChildName(s.obj.GetName(), obj.GetName()) {
-			for shard, objStatusSlice := range status.CreatedObjects {
-				for _, objStatus := range objStatusSlice {
-					if objStatus["name"] == obj.GetName() {
-						shardName = shard
-					}
-				}
-			}
-			shouldDelete, err := e.evaluateDeletionTiming(s, &obj, shardName)
-			if err != nil {
-				logger.Error(err, "error handling deletion timing", "objectKind", obj.GetKind(), "objectName", obj.GetName())
-				return ctrl.Result{}, err
-			}
-			if shouldDelete {
-				if err := e.Delete(s.ctx, &obj); err != nil {
-					logger.Error(err, "unable to delete", "objectKind", obj.GetKind(), "objectName", obj.GetName())
-					return ctrl.Result{}, err
-				}
-				logger.Info("successfully deleted from cluster", "objectKind", obj.GetKind(), "objectName", obj.GetName())
-				e.eventf(s, EventChildDeleted, "Deleted %s %s", obj.GetKind(), obj.GetName())
-				metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
-				s.mutated = true
-				return ctrl.Result{}, nil
-			}
-			// The child waits for its deletion window; keep it recorded
-			// and come back when the window may have passed.
-			if err := e.addChildToStatus(s, obj.GetKind(), obj.GetName(), shardName); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{RequeueAfter: e.Settings.TerminationPeriod}, nil
-		}
-
-		if err := e.addChildToStatus(s, obj.GetKind(), obj.GetName(), shardName); err != nil {
-			return ctrl.Result{}, err
+		if done {
+			// A mutation or a pending deletion window ended the pass.
+			return result, nil
 		}
 	}
 
-	// Drop status records whose objects no longer exist in the cluster.
-	for shard, objStatusSlice := range status.CreatedObjects {
-		for _, objStatus := range objStatusSlice {
-			if !findInStatus(shard, objStatus["kind"], objStatus["name"], &currentList) {
-				obj := &unstructured.Unstructured{}
-				obj.SetKind(objStatus["kind"])
-				obj.SetAPIVersion(s.obj.GetObject().GetObjectKind().GroupVersionKind().Version)
-				obj.SetNamespace(s.obj.GetNamespace())
-				obj.SetName(objStatus["name"])
-				if err := e.Get(s.ctx, client.ObjectKey{Namespace: obj.GetNamespace(), Name: obj.GetName()}, obj); err != nil {
-					// If it does not exist, delete the object from the status
-					if err := e.removeChildFromStatus(s, objStatus["name"]); err != nil {
-						logger.Error(err, "unable to update status", "objectKind", s.obj.GetKind(), "objectName", objStatus["name"])
-						return ctrl.Result{}, err
-					}
-				}
-				e.tracker.markReady(s.key)
-			}
-		}
+	if staleErr := e.dropStaleStatusRecords(s, currentList); staleErr != nil {
+		return ctrl.Result{}, staleErr
 	}
 
 	e.tracker.markReady(s.key)
 	return ctrl.Result{}, nil
 }
 
+// pruneChild keeps a desired child recorded in the status, and walks a child
+// that is no longer desired (or is a tmp child, which always runs its
+// timeline) through the graceful deletion steps. done is true when the pass
+// must end with the returned result.
+func (e *Engine[C]) pruneChild(
+	s *scope,
+	obj *unstructured.Unstructured,
+	currentList map[string][]map[string]string,
+) (ctrl.Result, bool, error) {
+	logger := log.FromContext(s.ctx)
+
+	keep := false
+	var shardName string
+	for _, shard := range s.shards {
+		if findInStatus(shard.Name, obj.GetKind(), obj.GetName(), &currentList) {
+			keep = true
+			shardName = shard.Name
+			break
+		}
+	}
+
+	// tmp children always run their deletion timeline, kept or not.
+	if keep && !isTmpChildName(s.obj.GetName(), obj.GetName()) {
+		return ctrl.Result{}, false, e.addChildToStatus(s, obj.GetKind(), obj.GetName(), shardName)
+	}
+
+	for shard, objStatusSlice := range s.obj.GetShardedStatus().CreatedObjects {
+		for _, objStatus := range objStatusSlice {
+			if objStatus[statusKeyName] == obj.GetName() {
+				shardName = shard
+			}
+		}
+	}
+	shouldDelete, err := e.evaluateDeletionTiming(s, obj, shardName)
+	if err != nil {
+		logger.Error(err, "error handling deletion timing", "objectKind", obj.GetKind(), "objectName", obj.GetName())
+		return ctrl.Result{}, false, err
+	}
+	if shouldDelete {
+		if deleteErr := e.Delete(s.ctx, obj); deleteErr != nil {
+			logger.Error(deleteErr, "unable to delete", "objectKind", obj.GetKind(), "objectName", obj.GetName())
+			return ctrl.Result{}, false, deleteErr
+		}
+		logger.Info("successfully deleted from cluster", "objectKind", obj.GetKind(), "objectName", obj.GetName())
+		e.eventf(s, EventChildDeleted, "Deleted %s %s", obj.GetKind(), obj.GetName())
+		metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
+		s.mutated = true
+		return ctrl.Result{}, true, nil
+	}
+	// The child waits for its deletion window; keep it recorded and come
+	// back when the window may have passed.
+	if statusErr := e.addChildToStatus(s, obj.GetKind(), obj.GetName(), shardName); statusErr != nil {
+		return ctrl.Result{}, false, statusErr
+	}
+	return ctrl.Result{RequeueAfter: e.Settings.TerminationPeriod}, true, nil
+}
+
+// dropStaleStatusRecords removes status records whose objects no longer exist
+// in the cluster.
+func (e *Engine[C]) dropStaleStatusRecords(s *scope, currentList map[string][]map[string]string) error {
+	logger := log.FromContext(s.ctx)
+
+	for shard, objStatusSlice := range s.obj.GetShardedStatus().CreatedObjects {
+		for _, objStatus := range objStatusSlice {
+			if findInStatus(shard, objStatus[statusKeyKind], objStatus[statusKeyName], &currentList) {
+				continue
+			}
+			obj := &unstructured.Unstructured{}
+			obj.SetKind(objStatus[statusKeyKind])
+			obj.SetAPIVersion(s.obj.GetObject().GetObjectKind().GroupVersionKind().Version)
+			obj.SetNamespace(s.obj.GetNamespace())
+			obj.SetName(objStatus[statusKeyName])
+			if getErr := e.Get(
+				s.ctx,
+				client.ObjectKey{Namespace: obj.GetNamespace(), Name: obj.GetName()},
+				obj,
+			); getErr != nil {
+				// If it does not exist, delete the object from the status.
+				if removeErr := e.removeChildFromStatus(s, objStatus[statusKeyName]); removeErr != nil {
+					logger.Error(
+						removeErr,
+						"unable to update status",
+						"objectKind",
+						s.obj.GetKind(),
+						"objectName",
+						objStatus[statusKeyName],
+					)
+					return removeErr
+				}
+			}
+			e.tracker.markReady(s.key)
+		}
+	}
+	return nil
+}
+
 // evaluateDeletionTiming drives the graceful deletion timeline of one child:
 // first stamp auto-delete-after, then mark for service discovery
 // unregistering one termination period before the deadline, and only report
 // shouldDelete once the deadline passed.
-func (e *Engine[C]) evaluateDeletionTiming(s *scope, obj *unstructured.Unstructured, shardName string) (shouldDelete bool, err error) {
+func (e *Engine[C]) evaluateDeletionTiming(
+	s *scope,
+	obj *unstructured.Unstructured,
+	shardName string,
+) (bool, error) {
 	logger := log.FromContext(s.ctx)
 
 	deleteAfterTime, deleteAfterExists, err := parseDeleteAfterAnnotation(obj)
 	if err != nil {
-		logger.Error(err, "unable to parse auto-delete-after annotation", "objectKind", obj.GetKind(), "objectName", obj.GetName())
+		logger.Error(
+			err,
+			"unable to parse auto-delete-after annotation",
+			"objectKind",
+			obj.GetKind(),
+			"objectName",
+			obj.GetName(),
+		)
 		return false, err
 	}
 
-	delTime := e.Settings.TerminationPeriod * 2
+	delTime := e.Settings.TerminationPeriod * regularChildDeleteWindows
 	if isTmpChildName(s.obj.GetName(), obj.GetName()) {
-		delTime = e.Settings.TerminationPeriod * 3
+		delTime = e.Settings.TerminationPeriod * tmpChildDeleteWindows
 	}
 	markedForDeletion := e.clock.isMarkedForUnregistering(obj)
 
@@ -511,12 +641,25 @@ func (e *Engine[C]) evaluateDeletionTiming(s *scope, obj *unstructured.Unstructu
 			e.clock.markForUnregistering(obj)
 			setDeleteAfterAnnotation(obj, delTime)
 
-			if err := e.Update(s.ctx, obj); err != nil {
-				logger.Error(err, "unable to update object with marked-for-deletion annotation", "objectKind", obj.GetKind(), "objectName", obj.GetName())
-				return false, err
+			if updateErr := e.Update(s.ctx, obj); updateErr != nil {
+				logger.Error(
+					updateErr,
+					"unable to update object with marked-for-deletion annotation",
+					"objectKind",
+					obj.GetKind(),
+					"objectName",
+					obj.GetName(),
+				)
+				return false, updateErr
 			}
 			logger.Info("marked-for-deletion annotation set", "objectKind", obj.GetKind(), "objectName", obj.GetName())
-			e.eventf(s, EventMarkedForDeletion, "Marked %s %s for service discovery unregistering", obj.GetKind(), obj.GetName())
+			e.eventf(
+				s,
+				EventMarkedForDeletion,
+				"Marked %s %s for service discovery unregistering",
+				obj.GetKind(),
+				obj.GetName(),
+			)
 			metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
 			s.mutated = true
 		}
@@ -525,12 +668,34 @@ func (e *Engine[C]) evaluateDeletionTiming(s *scope, obj *unstructured.Unstructu
 	}
 
 	setDeleteAfterAnnotation(obj, delTime)
-	if err := e.Update(s.ctx, obj); err != nil {
-		logger.Error(err, "unable to update auto-delete-after annotation", "objectKind", obj.GetKind(), "objectName", obj.GetName())
-		return false, err
+	if updateErr := e.Update(s.ctx, obj); updateErr != nil {
+		logger.Error(
+			updateErr,
+			"unable to update auto-delete-after annotation",
+			"objectKind",
+			obj.GetKind(),
+			"objectName",
+			obj.GetName(),
+		)
+		return false, updateErr
 	}
-	logger.Info("auto-delete-after annotation set", "objectKind", obj.GetKind(), "objectName", obj.GetName(), "auto-delete-after", obj.GetAnnotations()[AutoDeleteAfterAnnotation])
-	e.eventf(s, EventDeletionScheduled, "Scheduled %s %s for deletion at %s", obj.GetKind(), obj.GetName(), obj.GetAnnotations()[AutoDeleteAfterAnnotation])
+	logger.Info(
+		"auto-delete-after annotation set",
+		"objectKind",
+		obj.GetKind(),
+		"objectName",
+		obj.GetName(),
+		"auto-delete-after",
+		obj.GetAnnotations()[AutoDeleteAfterAnnotation],
+	)
+	e.eventf(
+		s,
+		EventDeletionScheduled,
+		"Scheduled %s %s for deletion at %s",
+		obj.GetKind(),
+		obj.GetName(),
+		obj.GetAnnotations()[AutoDeleteAfterAnnotation],
+	)
 	metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
 	e.tracker.markWaiting(s.key)
 	s.mutated = true
@@ -561,75 +726,140 @@ func (e *Engine[C]) reconcileTerminating(s *scope) (ctrl.Result, error) {
 	//         otherwise requeue after FinalizerDeletionTerminationPeriod
 	waitingForDeletion := 0
 	for _, child := range childrenList.Items {
-		var shardName string
-		for shard, objStatusSlice := range s.obj.GetShardedStatus().CreatedObjects {
-			for _, objStatus := range objStatusSlice {
-				if objStatus["name"] == child.GetName() {
-					shardName = shard
-				}
-			}
+		waiting, drainErr := e.drainChild(s, &child)
+		if drainErr != nil {
+			return ctrl.Result{}, drainErr
 		}
-
-		deleteAfter, deleteAfterExists, err := parseDeleteAfterAnnotation(&child)
-		if err != nil {
-			logger.Error(err, "[finalizer] unable to parse auto-delete-after annotation", "objectKind", child.GetKind(), "objectName", child.GetName())
-			return ctrl.Result{}, fmt.Errorf("[finalizer] cannot parse delete after annotation: %w", err)
-		}
-
-		if !deleteAfterExists || !e.clock.isMarkedForUnregistering(&child) {
-			logger.Info("[finalizer] mark child for deletion", "objectKind", child.GetKind(), "objectName", child.GetName())
-			e.clock.markForUnregistering(&child)
-			setDeleteAfterAnnotation(&child, e.Settings.FinalizerDeletionTerminationPeriod)
-
-			if err := e.Update(s.ctx, &child); err != nil {
-				logger.Error(err, "[finalizer] unable to set auto-delete-after and unregister annotation on child", "objectKind", child.GetKind(), "objectName", child.GetName())
-				return ctrl.Result{}, fmt.Errorf("[finalizer] unable to set auto-delete-after and unregister annotation on child: %w", err)
-			}
-			e.eventf(s, EventFinalizerDraining, "Draining child %s %s before deletion", child.GetKind(), child.GetName())
-			waitingForDeletion++
-			continue
-		}
-
-		if time.Now().After(deleteAfter) {
-			logger.Info("[finalizer] deleting child", "objectKind", child.GetKind(), "objectName", child.GetName())
-			if err := e.Delete(s.ctx, &child); err != nil {
-				logger.Error(err, "[finalizer] unable to delete child", "objectKind", child.GetKind(), "objectName", child.GetName())
-				return ctrl.Result{}, err
-			}
-			logger.Info("[finalizer] successfully deleted child from cluster", "objectKind", child.GetKind(), "objectName", child.GetName())
-			e.eventf(s, EventChildDeleted, "Deleted child %s %s", child.GetKind(), child.GetName())
-			metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
-		} else {
+		if waiting {
 			waitingForDeletion++
 		}
 	}
 
-	if waitingForDeletion == 0 {
-		if err := e.Get(s.ctx, s.req.NamespacedName, s.obj); err != nil {
-			if apierrors.IsNotFound(err) {
-				logger.Info("[finalizer] object not found, finalizer removal skipped")
-				return ctrl.Result{}, nil
-			}
-			return ctrl.Result{}, fmt.Errorf("[finalizer] failed to refresh object: %w", err)
-		}
-
-		controllerutil.RemoveFinalizer(s.obj, e.Settings.FinalizerKey)
-		if err := e.Update(s.ctx, s.obj); err != nil {
-			if apierrors.IsConflict(err) {
-				logger.Info("[finalizer] version conflict during finalizer removal, requeueing")
-				return ctrl.Result{Requeue: true}, nil
-			}
-			if apierrors.IsNotFound(err) {
-				logger.Info("[finalizer] object not found after finalizer removal, finalizer loop skipped")
-				return ctrl.Result{}, nil
-			}
-			return ctrl.Result{}, fmt.Errorf("cannot remove finalizer: %w", err)
-		}
-		logger.Info("successfully removed finalizer from object")
-		e.eventf(s, EventFinalizerRemoved, "All children drained, finalizer removed")
-		return ctrl.Result{}, nil
+	if waitingForDeletion > 0 {
+		return ctrl.Result{RequeueAfter: e.Settings.FinalizerDeletionTerminationPeriod}, nil
 	}
-	return ctrl.Result{RequeueAfter: e.Settings.FinalizerDeletionTerminationPeriod}, nil
+	return e.removeFinalizer(s)
+}
+
+// drainChild walks one child of a deleted parent through the drain steps:
+// mark it for unregistering first, delete it once its window passed. waiting
+// is true while the child still exists and its window has not passed.
+func (e *Engine[C]) drainChild(s *scope, child *unstructured.Unstructured) (bool, error) {
+	logger := log.FromContext(s.ctx)
+
+	var shardName string
+	for shard, objStatusSlice := range s.obj.GetShardedStatus().CreatedObjects {
+		for _, objStatus := range objStatusSlice {
+			if objStatus[statusKeyName] == child.GetName() {
+				shardName = shard
+			}
+		}
+	}
+
+	deleteAfter, deleteAfterExists, err := parseDeleteAfterAnnotation(child)
+	if err != nil {
+		logger.Error(
+			err,
+			"[finalizer] unable to parse auto-delete-after annotation",
+			"objectKind",
+			child.GetKind(),
+			"objectName",
+			child.GetName(),
+		)
+		return false, fmt.Errorf("[finalizer] cannot parse delete after annotation: %w", err)
+	}
+
+	if !deleteAfterExists || !e.clock.isMarkedForUnregistering(child) {
+		logger.Info(
+			"[finalizer] mark child for deletion",
+			"objectKind",
+			child.GetKind(),
+			"objectName",
+			child.GetName(),
+		)
+		e.clock.markForUnregistering(child)
+		setDeleteAfterAnnotation(child, e.Settings.FinalizerDeletionTerminationPeriod)
+
+		if updateErr := e.Update(s.ctx, child); updateErr != nil {
+			logger.Error(
+				updateErr,
+				"[finalizer] unable to set auto-delete-after and unregister annotation on child",
+				"objectKind",
+				child.GetKind(),
+				"objectName",
+				child.GetName(),
+			)
+			return false, fmt.Errorf(
+				"[finalizer] unable to set auto-delete-after and unregister annotation on child: %w",
+				updateErr,
+			)
+		}
+		e.eventf(
+			s,
+			EventFinalizerDraining,
+			"Draining child %s %s before deletion",
+			child.GetKind(),
+			child.GetName(),
+		)
+		return true, nil
+	}
+
+	if !time.Now().After(deleteAfter) {
+		return true, nil
+	}
+
+	logger.Info("[finalizer] deleting child", "objectKind", child.GetKind(), "objectName", child.GetName())
+	if deleteErr := e.Delete(s.ctx, child); deleteErr != nil {
+		logger.Error(
+			deleteErr,
+			"[finalizer] unable to delete child",
+			"objectKind",
+			child.GetKind(),
+			"objectName",
+			child.GetName(),
+		)
+		return false, deleteErr
+	}
+	logger.Info(
+		"[finalizer] successfully deleted child from cluster",
+		"objectKind",
+		child.GetKind(),
+		"objectName",
+		child.GetName(),
+	)
+	e.eventf(s, EventChildDeleted, "Deleted child %s %s", child.GetKind(), child.GetName())
+	metrics.ProcessingCounter.WithLabelValues(e.CtrlName, shardName).Inc()
+	return false, nil
+}
+
+// removeFinalizer refreshes the parent and removes the controller finalizer
+// once every child is drained and deleted.
+func (e *Engine[C]) removeFinalizer(s *scope) (ctrl.Result, error) {
+	logger := log.FromContext(s.ctx)
+
+	if err := e.Get(s.ctx, s.req.NamespacedName, s.obj); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.Info("[finalizer] object not found, finalizer removal skipped")
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("[finalizer] failed to refresh object: %w", err)
+	}
+
+	controllerutil.RemoveFinalizer(s.obj, e.Settings.FinalizerKey)
+	if err := e.Update(s.ctx, s.obj); err != nil {
+		if apierrors.IsConflict(err) {
+			logger.Info("[finalizer] version conflict during finalizer removal, requeueing")
+			return ctrl.Result{Requeue: true}, nil
+		}
+		if apierrors.IsNotFound(err) {
+			logger.Info("[finalizer] object not found after finalizer removal, finalizer loop skipped")
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("cannot remove finalizer: %w", err)
+	}
+	logger.Info("successfully removed finalizer from object")
+	e.eventf(s, EventFinalizerRemoved, "All children drained, finalizer removed")
+	return ctrl.Result{}, nil
 }
 
 // publishLifecycle mirrors the outcome of the pass into the parent status.
@@ -638,21 +868,45 @@ func (e *Engine[C]) publishLifecycle(s *scope, result ctrl.Result) {
 
 	switch {
 	case s.resharding:
-		if err := e.setLifecycle(s, controllerv1.PhaseResharding,
+		if err := e.setLifecycle(
+			s,
+			controllerv1.PhaseResharding,
 			condition(controllerv1.ConditionReady, false, "Resharding", "Children are migrating between shards"),
-			condition(controllerv1.ConditionResharding, true, "MigrationInProgress", "Children are migrating to their new shard")); err != nil {
+			condition(
+				controllerv1.ConditionResharding,
+				true,
+				"MigrationInProgress",
+				"Children are migrating to their new shard",
+			),
+		); err != nil {
 			logger.Error(err, "unable to publish lifecycle status")
 		}
 	case s.mutated || result.RequeueAfter > 0 || result.Requeue:
-		if err := e.setLifecycle(s, controllerv1.PhaseProvisioning,
+		if err := e.setLifecycle(
+			s,
+			controllerv1.PhaseProvisioning,
 			condition(controllerv1.ConditionReady, false, "Provisioning", "Children are being applied"),
-			condition(controllerv1.ConditionResharding, false, "NoMigration", "No shard migration in progress")); err != nil {
+			condition(
+				controllerv1.ConditionResharding,
+				false,
+				"NoMigration",
+				"No shard migration in progress",
+			),
+		); err != nil {
 			logger.Error(err, "unable to publish lifecycle status")
 		}
 	default:
-		if err := e.setLifecycle(s, controllerv1.PhaseReady,
+		if err := e.setLifecycle(
+			s,
+			controllerv1.PhaseReady,
 			condition(controllerv1.ConditionReady, true, "ChildrenReady", "All children match the desired state"),
-			condition(controllerv1.ConditionResharding, false, "NoMigration", "No shard migration in progress")); err != nil {
+			condition(
+				controllerv1.ConditionResharding,
+				false,
+				"NoMigration",
+				"No shard migration in progress",
+			),
+		); err != nil {
 			logger.Error(err, "unable to publish lifecycle status")
 		}
 	}

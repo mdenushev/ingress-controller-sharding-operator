@@ -30,7 +30,7 @@ spec:
     name: v1
     schema:
       openAPIV3Schema:
-        description: ShardedHTTPProxy is the Schema for the shardedhttpproxies API
+        description: ShardedHTTPProxy is the Schema for the shardedhttpproxies API.
         properties:
           apiVersion:
             description: |-
@@ -50,7 +50,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: ShardedHTTPProxySpec defines the desired state of ShardedHTTPProxy
+            description: ShardedHTTPProxySpec defines the desired state of ShardedHTTPProxy.
             properties:
               template:
                 properties:
@@ -2679,7 +2679,7 @@ spec:
                 type: object
             type: object
           status:
-            description: ShardedStatus defines the observed state of sharded objects
+            description: ShardedStatus defines the observed state of sharded objects.
             properties:
               conditions:
                 description: Conditions describe the current reconciliation state.

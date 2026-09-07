@@ -47,7 +47,10 @@ type cooldownScheduler struct {
 	tracker             *stateTracker
 }
 
-func newCooldownScheduler(terminationPeriod, shardUpdateCooldown time.Duration, tracker *stateTracker) *cooldownScheduler {
+func newCooldownScheduler(
+	terminationPeriod, shardUpdateCooldown time.Duration,
+	tracker *stateTracker,
+) *cooldownScheduler {
 	return &cooldownScheduler{
 		terminationPeriod:   terminationPeriod,
 		shardUpdateCooldown: shardUpdateCooldown,
@@ -72,6 +75,18 @@ func (s *cooldownScheduler) plan(shard string) *applyPlan {
 	return ap
 }
 
+// Deletion bookings are grouped into windows measured in termination
+// periods (T): a booking opens the current deletion window one T out and the
+// next window three T out, mirroring the 3T tmp-child lifetime.
+const (
+	// nextDeletionWindowPeriods is how far (in T) the next deletion window
+	// starts after a fresh booking.
+	nextDeletionWindowPeriods = 3
+	// deletionWindowSlackPeriods is how far (in T) a slot must stay from
+	// the next window start to still chain inside the current window.
+	deletionWindowSlackPeriods = 2
+)
+
 // applyAction is the kind of pending change classify detected.
 type applyAction int
 
@@ -88,7 +103,12 @@ const (
 // from an old one) from the difference between the shards recorded in the
 // status and the shards the parent should live on, then books a slot in the
 // target shard's windows.
-func (s *cooldownScheduler) Schedule(objKey string, status *controllerv1.ShardedStatus, shards []Shard, logger logr.Logger) (ctrl.Result, bool) {
+func (s *cooldownScheduler) Schedule(
+	objKey string,
+	status *controllerv1.ShardedStatus,
+	shards []Shard,
+	logger logr.Logger,
+) (ctrl.Result, bool) {
 	action, shard := s.classify(objKey, status, shards, logger)
 
 	var result ctrl.Result
@@ -97,7 +117,7 @@ func (s *cooldownScheduler) Schedule(objKey string, status *controllerv1.Sharded
 		result = ctrl.Result{RequeueAfter: time.Until(s.bookCreateSlot(shard))}
 	case actionDelete:
 		result = ctrl.Result{RequeueAfter: time.Until(s.bookDeleteSlot(objKey, shard, logger))}
-	default:
+	case actionNone:
 		result = ctrl.Result{Requeue: true}
 	}
 
@@ -108,7 +128,12 @@ func (s *cooldownScheduler) Schedule(objKey string, status *controllerv1.Sharded
 // classify compares the shards recorded in the status with the shards the
 // parent must live on and decides which action the parent needs next, and on
 // which shard.
-func (s *cooldownScheduler) classify(objKey string, status *controllerv1.ShardedStatus, shards []Shard, logger logr.Logger) (applyAction, string) {
+func (s *cooldownScheduler) classify(
+	objKey string,
+	status *controllerv1.ShardedStatus,
+	shards []Shard,
+	logger logr.Logger,
+) (applyAction, string) {
 	if len(status.CreatedObjects) == 0 {
 		// Nothing recorded yet: first creation goes through unthrottled.
 		return actionNone, ""
@@ -159,7 +184,7 @@ func (s *cooldownScheduler) bookCreateSlot(shard string) time.Time {
 	ap.lastCreating = slot
 	ap.lastDeleting = slot
 	ap.currentDeletingWindowStart = slot.Add(s.terminationPeriod)
-	ap.nextDeletingWindowStart = slot.Add(s.terminationPeriod * 3)
+	ap.nextDeletingWindowStart = slot.Add(s.terminationPeriod * nextDeletionWindowPeriods)
 	return slot
 }
 
@@ -177,20 +202,39 @@ func (s *cooldownScheduler) bookDeleteSlot(objKey, shard string, logger logr.Log
 		ap.lastCreating = slot.Add(s.shardUpdateCooldown)
 		ap.lastDeleting = slot.Add(s.shardUpdateCooldown)
 		ap.currentDeletingWindowStart = slot.Add(s.terminationPeriod)
-		ap.nextDeletingWindowStart = slot.Add(s.terminationPeriod * 3)
-		logger.Info("Print timings", "object", objKey, "last-creating", time.Until(ap.lastCreating), "last-deleting", time.Until(ap.lastDeleting), "current-deleting", time.Until(ap.currentDeletingWindowStart), "next-deleting", time.Until(ap.nextDeletingWindowStart))
+		ap.nextDeletingWindowStart = slot.Add(s.terminationPeriod * nextDeletionWindowPeriods)
+		logger.Info(
+			"Print timings",
+			"object",
+			objKey,
+			"last-creating",
+			time.Until(ap.lastCreating),
+			"last-deleting",
+			time.Until(ap.lastDeleting),
+			"current-deleting",
+			time.Until(ap.currentDeletingWindowStart),
+			"next-deleting",
+			time.Until(ap.nextDeletingWindowStart),
+		)
 	}
 
-	if slot.Add(s.terminationPeriod * 2).Before(ap.nextDeletingWindowStart) {
+	switch {
+	case slot.Add(s.terminationPeriod * deletionWindowSlackPeriods).Before(ap.nextDeletingWindowStart):
 		// Well inside the current window: chain after the last deletion.
 		slot = ap.lastDeleting.Add(s.shardUpdateCooldown)
-	} else if slot.Add(s.terminationPeriod).Before(ap.nextDeletingWindowStart) {
+	case slot.Add(s.terminationPeriod).Before(ap.nextDeletingWindowStart):
 		// Too close to the window edge: open a new window and go there.
 		slot = ap.nextDeletingWindowStart.Add(s.shardUpdateCooldown)
 		ap.currentDeletingWindowStart = slot.Add(s.terminationPeriod)
-		ap.nextDeletingWindowStart = slot.Add(s.terminationPeriod * 3)
-		logger.Info("New termination window created and deleting later in new termination window", "object", objKey, "delay", time.Until(slot))
-	} else {
+		ap.nextDeletingWindowStart = slot.Add(s.terminationPeriod * nextDeletionWindowPeriods)
+		logger.Info(
+			"New termination window created and deleting later in new termination window",
+			"object",
+			objKey,
+			"delay",
+			time.Until(slot),
+		)
+	default:
 		slot = time.Now().Add(1 * time.Second)
 		logger.Info("Deleting now", "object", objKey, "delay", time.Until(slot))
 	}
@@ -204,7 +248,13 @@ func (s *cooldownScheduler) bookDeleteSlot(objKey, shard string, logger logr.Log
 // cluster and lowers maxShards where the cluster has fewer shards than the
 // configuration asks for. It also registers every discovered shard with the
 // scheduler.
-func discoverClusterShards(ctx context.Context, c client.Client, maxShards map[string]int, scheduler Scheduler, logger logr.Logger) error {
+func discoverClusterShards(
+	ctx context.Context,
+	c client.Client,
+	maxShards map[string]int,
+	scheduler Scheduler,
+	logger logr.Logger,
+) error {
 	shardCounts := make(map[string]int)
 
 	ingressClassList := &networkingv1.IngressClassList{}
@@ -225,10 +275,18 @@ func discoverClusterShards(ctx context.Context, c client.Client, maxShards map[s
 	for className, configShard := range maxShards {
 		if count, exists := shardCounts[className]; exists {
 			if count < configShard {
-				logger.Info("Reducing shard count to match Cluster value", "IngressClass", className, "ConfiguredShards", configShard, "CurrentShards", count)
+				logger.Info(
+					"Reducing shard count to match Cluster value",
+					"IngressClass",
+					className,
+					"ConfiguredShards",
+					configShard,
+					"CurrentShards",
+					count,
+				)
 				maxShards[className] = count
 			}
-			for i := 0; i < configShard; i++ {
+			for i := range configShard {
 				scheduler.NoteShard(fmt.Sprintf("%s-%d", className, i))
 			}
 		} else {

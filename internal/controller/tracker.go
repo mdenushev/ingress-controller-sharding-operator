@@ -72,12 +72,11 @@ func (t *stateTracker) doneWaiting(key string) {
 // forget drops every trace of the key after the parent has been deleted.
 func (t *stateTracker) forget(key string) {
 	if _, exists := t.errored[key]; exists {
-		parts := strings.Split(key, "/")
-		if len(parts) == 2 {
+		if namespace, name, ok := strings.Cut(key, "/"); ok {
 			metrics.ErrorListGauge.Delete(prometheus.Labels{
-				"controller": t.ctrlName,
-				"name":       parts[1],
-				"namespace":  parts[0],
+				metrics.LabelController: t.ctrlName,
+				metrics.LabelName:       name,
+				metrics.LabelNamespace:  namespace,
 			})
 		}
 	}
@@ -88,11 +87,19 @@ func (t *stateTracker) forget(key string) {
 
 	if ingressClass, exists := t.shardedClasses.Load(key); exists {
 		metrics.DeletingCounter.WithLabelValues("shardedingress").Inc()
-		metrics.ShardedIngressClassObjectCount.With(prometheus.Labels{"controller": t.ctrlName, "ingress_class": ingressClass.(string)}).Dec()
+		if class, ok := ingressClass.(string); ok {
+			metrics.ShardedIngressClassObjectCount.
+				With(prometheus.Labels{metrics.LabelController: t.ctrlName, metrics.LabelIngressClass: class}).
+				Dec()
+		}
 		t.shardedClasses.Delete(key)
 	}
 	if ingressClass, exists := t.childClasses.Load(key); exists {
-		metrics.ChildIngressClassObjectCount.With(prometheus.Labels{"controller": t.ctrlName, "ingress_class": ingressClass.(string)}).Dec()
+		if class, ok := ingressClass.(string); ok {
+			metrics.ChildIngressClassObjectCount.
+				With(prometheus.Labels{metrics.LabelController: t.ctrlName, metrics.LabelIngressClass: class}).
+				Dec()
+		}
 		t.childClasses.Delete(key)
 	}
 	t.updateMetrics()
@@ -112,14 +119,14 @@ func (t *stateTracker) noteChildClass(key, class string) {
 func (t *stateTracker) noteClass(cache *sync.Map, gauge *prometheus.GaugeVec, key, class string) {
 	if prev, exists := cache.Load(key); exists {
 		if prevStr, ok := prev.(string); ok && prevStr != class {
-			gauge.With(prometheus.Labels{"controller": t.ctrlName, "ingress_class": prevStr}).Dec()
+			gauge.With(prometheus.Labels{metrics.LabelController: t.ctrlName, metrics.LabelIngressClass: prevStr}).Dec()
 			cache.Delete(key)
-			gauge.With(prometheus.Labels{"controller": t.ctrlName, "ingress_class": class}).Inc()
+			gauge.With(prometheus.Labels{metrics.LabelController: t.ctrlName, metrics.LabelIngressClass: class}).Inc()
 			cache.Store(key, class)
 		}
 		return
 	}
-	gauge.With(prometheus.Labels{"controller": t.ctrlName, "ingress_class": class}).Inc()
+	gauge.With(prometheus.Labels{metrics.LabelController: t.ctrlName, metrics.LabelIngressClass: class}).Inc()
 	cache.Store(key, class)
 }
 
@@ -128,9 +135,8 @@ func (t *stateTracker) updateMetrics() {
 	metrics.ReadyListGauge.WithLabelValues(t.ctrlName).Set(float64(len(t.ready)))
 	metrics.ManagedListGauge.WithLabelValues(t.ctrlName).Set(float64(len(t.managed)))
 	for key := range t.errored {
-		parts := strings.Split(key, "/")
-		if len(parts) == 2 {
-			metrics.ErrorListGauge.WithLabelValues(t.ctrlName, parts[0], parts[1]).Set(float64(1))
+		if namespace, name, ok := strings.Cut(key, "/"); ok {
+			metrics.ErrorListGauge.WithLabelValues(t.ctrlName, namespace, name).Set(float64(1))
 		}
 	}
 }

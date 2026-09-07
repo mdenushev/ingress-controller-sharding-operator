@@ -95,31 +95,20 @@ func newParent(namespace string) *controllerv1.ShardedIngress {
 
 func ptr[T any](v T) *T { return &v }
 
-func TestShardedIngressLifecycle(t *testing.T) {
-	g := NewWithT(t)
-	ctx := context.Background()
-	cl := newE2EClient(t)
-
-	namespace := fmt.Sprintf("sharding-e2e-%d", time.Now().Unix())
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
-	g.Expect(cl.Create(ctx, ns)).To(Succeed())
-	t.Cleanup(func() { _ = cl.Delete(context.Background(), ns) })
-
-	parent := newParent(namespace)
-	g.Expect(cl.Create(ctx, parent)).To(Succeed())
-
-	parentKey := types.NamespacedName{Namespace: namespace, Name: parentName}
-	childKey := types.NamespacedName{Namespace: namespace, Name: childName}
-	tmpKey := types.NamespacedName{Namespace: namespace, Name: tmpName}
-
-	getPhase := func() controllerv1.ShardedPhase {
+// phaseGetter polls the parent's status.phase; "" while unreadable.
+func phaseGetter(ctx context.Context, cl client.Client, key types.NamespacedName) func() controllerv1.ShardedPhase {
+	return func() controllerv1.ShardedPhase {
 		got := &controllerv1.ShardedIngress{}
-		if err := cl.Get(ctx, parentKey, got); err != nil {
+		if err := cl.Get(ctx, key, got); err != nil {
 			return ""
 		}
 		return got.Status.Phase
 	}
-	getChildClass := func(key types.NamespacedName) string {
+}
+
+// childClassGetter polls the ingress class of a child; "" while unreadable.
+func childClassGetter(ctx context.Context, cl client.Client) func(key types.NamespacedName) string {
+	return func(key types.NamespacedName) string {
 		child := &networkingv1.Ingress{}
 		if err := cl.Get(ctx, key, child); err != nil {
 			return ""
@@ -129,7 +118,11 @@ func TestShardedIngressLifecycle(t *testing.T) {
 		}
 		return *child.Spec.IngressClassName
 	}
-	eventReasons := func() []string {
+}
+
+// eventReasonsGetter polls the reasons of the events recorded on the parent.
+func eventReasonsGetter(ctx context.Context, cl client.Client, namespace string) func() []string {
+	return func() []string {
 		events := &corev1.EventList{}
 		if err := cl.List(ctx, events, client.InNamespace(namespace)); err != nil {
 			return nil
@@ -142,6 +135,28 @@ func TestShardedIngressLifecycle(t *testing.T) {
 		}
 		return reasons
 	}
+}
+
+func TestShardedIngressLifecycle(t *testing.T) {
+	gt := NewWithT(t)
+	ctx := context.Background()
+	cl := newE2EClient(t)
+
+	namespace := fmt.Sprintf("sharding-e2e-%d", time.Now().Unix())
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+	gt.Expect(cl.Create(ctx, ns)).To(Succeed())
+	t.Cleanup(func() { _ = cl.Delete(context.Background(), ns) })
+
+	parent := newParent(namespace)
+	gt.Expect(cl.Create(ctx, parent)).To(Succeed())
+
+	parentKey := types.NamespacedName{Namespace: namespace, Name: parentName}
+	childKey := types.NamespacedName{Namespace: namespace, Name: childName}
+	tmpKey := types.NamespacedName{Namespace: namespace, Name: tmpName}
+
+	getPhase := phaseGetter(ctx, cl, parentKey)
+	getChildClass := childClassGetter(ctx, cl)
+	eventReasons := eventReasonsGetter(ctx, cl, namespace)
 
 	t.Run("child is created and parent becomes Ready", func(t *testing.T) {
 		g := NewWithT(t)
@@ -204,12 +219,12 @@ func TestShardedIngressLifecycle(t *testing.T) {
 			Should(ContainElement("ReshardingStarted"))
 
 		g.Eventually(func() bool {
-			got := &controllerv1.ShardedIngress{}
-			if err := cl.Get(ctx, parentKey, got); err != nil {
+			latest := &controllerv1.ShardedIngress{}
+			if err := cl.Get(ctx, parentKey, latest); err != nil {
 				return false
 			}
-			_, oldRecorded := got.Status.CreatedObjects[oldShardClass]
-			_, newRecorded := got.Status.CreatedObjects[newShardClass]
+			_, oldRecorded := latest.Status.CreatedObjects[oldShardClass]
+			_, newRecorded := latest.Status.CreatedObjects[newShardClass]
 			return newRecorded && !oldRecorded
 		}, 3*time.Minute, 2*time.Second).Should(BeTrue(), "status must record the child under the new shard only")
 	})

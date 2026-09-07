@@ -9,7 +9,7 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// IngressTemplateSpec describes the data a ingress should have when created from a template
+// IngressTemplateSpec describes the data a ingress should have when created from a template.
 type IngressTemplateSpec struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
@@ -18,7 +18,7 @@ type IngressTemplateSpec struct {
 	Spec networkingv1.IngressSpec `json:"spec,omitempty"`
 }
 
-// ShardedIngressSpec defines the desired state of ShardedIngress
+// ShardedIngressSpec defines the desired state of ShardedIngress.
 type ShardedIngressSpec struct {
 	Template *IngressTemplateSpec `json:"template,omitempty"`
 }
@@ -29,7 +29,7 @@ type ShardedIngressSpec struct {
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="Lifecycle phase of the sharded object"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status",description="Ready condition"
 
-// ShardedIngress is the Schema for the shardedingresses API
+// ShardedIngress is the Schema for the shardedingresses API.
 type ShardedIngress struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -40,11 +40,12 @@ type ShardedIngress struct {
 
 //+kubebuilder:object:root=true
 
-// ShardedIngressList contains a list of ShardedIngress
+// ShardedIngressList contains a list of ShardedIngress.
 type ShardedIngressList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []ShardedIngress `json:"items"`
+
+	Items []ShardedIngress `json:"items"`
 }
 
 func init() {

@@ -30,7 +30,7 @@ spec:
     name: v1
     schema:
       openAPIV3Schema:
-        description: ShardedIngress is the Schema for the shardedingresses API
+        description: ShardedIngress is the Schema for the shardedingresses API.
         properties:
           apiVersion:
             description: |-
@@ -50,11 +50,11 @@ spec:
           metadata:
             type: object
           spec:
-            description: ShardedIngressSpec defines the desired state of ShardedIngress
+            description: ShardedIngressSpec defines the desired state of ShardedIngress.
             properties:
               template:
                 description: IngressTemplateSpec describes the data a ingress should
-                  have when created from a template
+                  have when created from a template.
                 properties:
                   metadata:
                     properties:
@@ -344,7 +344,7 @@ spec:
                 type: object
             type: object
           status:
-            description: ShardedStatus defines the observed state of sharded objects
+            description: ShardedStatus defines the observed state of sharded objects.
             properties:
               conditions:
                 description: Conditions describe the current reconciliation state.

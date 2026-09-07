@@ -30,6 +30,24 @@ const (
 	OldShardAnnotation = "old-shard"
 
 	tmpNameSuffix = "tmp"
+
+	// trueValue is the value of the boolean-ish annotations and labels the
+	// controller stamps and reads ("use-all-class-shards", the unregister
+	// mark, the root-proxy label).
+	trueValue = "true"
+)
+
+// The deletion timeline is measured in termination periods (T).
+const (
+	// regularChildDeleteWindows: a child that is no longer desired is
+	// deleted 2T after its auto-delete-after stamp.
+	regularChildDeleteWindows = 2
+	// tmpChildDeleteWindows: a tmp migration child is deleted 3T after the
+	// migration starts (t0+3T).
+	tmpChildDeleteWindows = 3
+	// oldShardHoldWindows: the main child holds the old shard until 2T
+	// before the tmp child's deadline, i.e. until t0+T.
+	oldShardHoldWindows = 2
 )
 
 // tmpChildName is the name of the tmp child that keeps the old shard alive
@@ -88,37 +106,40 @@ type migrationHold struct {
 // migration window has passed or the annotations are absent, letting the main
 // child switch to the new shard.
 func (m migrationClock) holdOldShard(annotations map[string]string) migrationHold {
-	if deleteAfterStr, exists := annotations[AutoDeleteAfterAnnotation]; exists {
-		deleteAfterTime, err := time.Parse(time.RFC3339, deleteAfterStr)
-		if err != nil {
-			return migrationHold{}
-		}
-		// The tmp child dies at t0+3T; the main child holds the old
-		// shard until t0+T, i.e. while now < deleteAfter-2T.
-		timeBeforeChange := deleteAfterTime.Add(-m.terminationPeriod * 2)
-		if !time.Now().After(timeBeforeChange) {
-			if oldShard, exists := annotations[OldShardAnnotation]; exists {
-				return migrationHold{Active: true, OldShard: oldShard}
-			}
-		}
-	} else if oldShard, exists := annotations[OldShardAnnotation]; exists {
+	oldShard, hasOldShard := annotations[OldShardAnnotation]
+	if !hasOldShard {
+		return migrationHold{}
+	}
+	deleteAfterStr, hasDeleteAfter := annotations[AutoDeleteAfterAnnotation]
+	if !hasDeleteAfter {
 		// The deletion pass has not stamped the tmp child yet: the
 		// migration clock has not started, keep the old shard.
+		return migrationHold{Active: true, OldShard: oldShard}
+	}
+	deleteAfterTime, err := time.Parse(time.RFC3339, deleteAfterStr)
+	if err != nil {
+		return migrationHold{}
+	}
+	// The tmp child dies at t0+3T; the main child holds the old shard
+	// until t0+T, i.e. while now < deleteAfter-2T.
+	timeBeforeChange := deleteAfterTime.Add(-m.terminationPeriod * oldShardHoldWindows)
+	if !time.Now().After(timeBeforeChange) {
 		return migrationHold{Active: true, OldShard: oldShard}
 	}
 	return migrationHold{}
 }
 
-func parseDeleteAfterAnnotation(obj *unstructured.Unstructured) (deleteAfter time.Time, exists bool, err error) {
-	if obj.GetAnnotations() == nil {
+func parseDeleteAfterAnnotation(obj *unstructured.Unstructured) (time.Time, bool, error) {
+	annotations := obj.GetAnnotations()
+	if annotations == nil {
 		return time.Time{}, false, nil
 	}
 
-	deleteAfterStr, exists := obj.GetAnnotations()[AutoDeleteAfterAnnotation]
+	deleteAfterStr, exists := annotations[AutoDeleteAfterAnnotation]
 	if !exists {
 		return time.Time{}, false, nil
 	}
-	deleteAfter, err = time.Parse(time.RFC3339, deleteAfterStr)
+	deleteAfter, err := time.Parse(time.RFC3339, deleteAfterStr)
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("unable to parse auto-delete-after annotation as RFC3339: %w", err)
 	}
@@ -141,7 +162,7 @@ func (m migrationClock) markForUnregistering(obj *unstructured.Unstructured) {
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
-	annotations[m.unregisterAnnotation] = "true"
+	annotations[m.unregisterAnnotation] = trueValue
 	obj.SetAnnotations(annotations)
 }
 
@@ -150,5 +171,5 @@ func (m migrationClock) isMarkedForUnregistering(obj *unstructured.Unstructured)
 	if annotations == nil {
 		return false
 	}
-	return annotations[m.unregisterAnnotation] == "true"
+	return annotations[m.unregisterAnnotation] == trueValue
 }

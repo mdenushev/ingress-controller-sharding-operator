@@ -54,7 +54,11 @@ func newMigratingShardedHTTPProxy() *controllerv1.ShardedHTTPProxy {
 
 // newTestHTTPProxyEngine wires an Engine over a fake client plus the scope of
 // one reconcile pass pinned to the new shard.
-func newTestHTTPProxyEngine(t *testing.T, sharded *controllerv1.ShardedHTTPProxy, existing ...client.Object) (*Engine[*contourv1.HTTPProxy], *scope) {
+func newTestHTTPProxyEngine(
+	t *testing.T,
+	sharded *controllerv1.ShardedHTTPProxy,
+	existing ...client.Object,
+) (*Engine[*contourv1.HTTPProxy], *scope) {
 	t.Helper()
 
 	testScheme := runtime.NewScheme()
@@ -101,7 +105,11 @@ func newTestHTTPProxyEngine(t *testing.T, sharded *controllerv1.ShardedHTTPProxy
 	return engine, s
 }
 
-func findChild(t *testing.T, objs []DesiredChild[*contourv1.HTTPProxy], name string) (DesiredChild[*contourv1.HTTPProxy], *contourv1.HTTPProxy) {
+func findChild(
+	t *testing.T,
+	objs []DesiredChild[*contourv1.HTTPProxy],
+	name string,
+) (DesiredChild[*contourv1.HTTPProxy], *contourv1.HTTPProxy) {
 	t.Helper()
 	for _, o := range objs {
 		if o.Obj.GetName() == name {
@@ -248,7 +256,8 @@ func TestApplyChildrenMigrationDoesNotChurnAutoDeleteOnMain(t *testing.T) {
 		// deadline must be set once rather than rescheduled every cycle. This
 		// also proves the deletion pass really ran.
 		gotTmp := &contourv1.HTTPProxy{}
-		g.Expect(e.Client.Get(s.ctx, types.NamespacedName{Namespace: "default", Name: "app-0-tmp"}, gotTmp)).To(Succeed())
+		g.Expect(e.Client.Get(s.ctx, types.NamespacedName{Namespace: "default", Name: "app-0-tmp"}, gotTmp)).
+			To(Succeed())
 		g.Expect(gotTmp.Annotations).To(HaveKey(AutoDeleteAfterAnnotation), "cycle %d", cycle)
 		if tmpDeleteAfter == "" {
 			tmpDeleteAfter = gotTmp.Annotations[AutoDeleteAfterAnnotation]

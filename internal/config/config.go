@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/viper"
 )
 
-type ConfigType struct {
+type AppConfig struct {
 	ShardedIngress struct {
 		Shards map[string]int `mapstructure:"shards"`
 	} `mapstructure:"shardedIngress"`
@@ -60,19 +60,28 @@ type ConfigType struct {
 	} `mapstructure:"allShardsPlacement"`
 }
 
-func LoadConfig(path string, runShardedIngress, runShardedHTTPProxy bool) (*ConfigType, error) {
+// Defaults applied when the config file does not set the value.
+const (
+	defaultObjectUpdateCooldown       = 30 * time.Second
+	defaultShardUpdateCooldown        = 10 * time.Second
+	defaultAPIRateLimit               = 10
+	defaultAPIBurstLimit              = 100
+	defaultFinalizerTerminationPeriod = 5 * time.Minute
+)
+
+func LoadConfig(path string, runShardedIngress, runShardedHTTPProxy bool) (*AppConfig, error) {
 	viper.SetOptions(viper.ExperimentalBindStruct())
 	viper.SetConfigType("yaml")
-	viper.SetDefault("rateLimit.updateCooldown.object", 30*time.Second)
-	viper.SetDefault("rateLimit.updateCooldown.shard", 10*time.Second)
-	viper.SetDefault("rateLimit.apiRateLimit", 10)
-	viper.SetDefault("rateLimit.apiBurstLimit", 100)
+	viper.SetDefault("rateLimit.updateCooldown.object", defaultObjectUpdateCooldown)
+	viper.SetDefault("rateLimit.updateCooldown.shard", defaultShardUpdateCooldown)
+	viper.SetDefault("rateLimit.apiRateLimit", defaultAPIRateLimit)
+	viper.SetDefault("rateLimit.apiBurstLimit", defaultAPIBurstLimit)
 
 	viper.SetDefault("shardedHTTPProxy.labels.rootHTTPProxy", "k8s.tochka.com/base-proxy")
 	viper.SetDefault("shardedHTTPProxy.annotations.virtualHosts", "k8s.tochka.com/virtual-hosts")
 
 	viper.SetDefault("finalizer.key", "k8s.tochka.com/sharded-controller-finalizer")
-	viper.SetDefault("finalizer.terminationPeriod", 5*time.Minute)
+	viper.SetDefault("finalizer.terminationPeriod", defaultFinalizerTerminationPeriod)
 	viper.SetDefault("finalizer.deletionTerminationPeriod", time.Minute)
 
 	viper.SetDefault("additionalServiceDiscovery.labels.class", "k8s.tochka.com/ingress-class")
@@ -92,7 +101,7 @@ func LoadConfig(path string, runShardedIngress, runShardedHTTPProxy bool) (*Conf
 		return nil, fmt.Errorf("error reading config file: %w", err)
 	}
 
-	var config ConfigType
+	var config AppConfig
 	if err := viper.Unmarshal(&config); err != nil {
 		return nil, fmt.Errorf("unable to decode into struct: %w", err)
 	}
@@ -100,7 +109,7 @@ func LoadConfig(path string, runShardedIngress, runShardedHTTPProxy bool) (*Conf
 	if shardsEnv := os.Getenv("SHARDED_SHARDEDINGRESS_SHARDS"); shardsEnv != "" {
 		var shards map[string]int
 		if err := json.Unmarshal([]byte(shardsEnv), &shards); err != nil {
-			fmt.Printf("Error parsing JSON for SHARDED_SHARDEDINGRESS_SHARDS: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error parsing JSON for SHARDED_SHARDEDINGRESS_SHARDS: %v\n", err)
 		} else {
 			config.ShardedIngress.Shards = shards
 		}
@@ -109,7 +118,7 @@ func LoadConfig(path string, runShardedIngress, runShardedHTTPProxy bool) (*Conf
 	if shardsEnv := os.Getenv("SHARDED_SHARDEDHTTPPROXY_SHARDS"); shardsEnv != "" {
 		var shards map[string]int
 		if err := json.Unmarshal([]byte(shardsEnv), &shards); err != nil {
-			fmt.Printf("Error parsing JSON for SHARDED_SHARDEDHTTPPROXY_SHARDS: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error parsing JSON for SHARDED_SHARDEDHTTPPROXY_SHARDS: %v\n", err)
 		} else {
 			config.ShardedHTTPProxy.Shards = shards
 		}
@@ -122,7 +131,7 @@ func LoadConfig(path string, runShardedIngress, runShardedHTTPProxy bool) (*Conf
 	return &config, nil
 }
 
-func validateConfig(conf *ConfigType, runShardedIngress, runShardedHTTPProxy bool) error {
+func validateConfig(conf *AppConfig, runShardedIngress, runShardedHTTPProxy bool) error {
 	if runShardedIngress {
 		if len(conf.ShardedIngress.Shards) == 0 {
 			return fmt.Errorf("shardedIngress.shards must be configured")

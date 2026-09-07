@@ -71,7 +71,10 @@ func main() {
 	}
 
 	if !runShardedIngress && !runShardedHTTPProxy {
-		setupLog.Info("invalid configuration", "at least one controller must be specified: use --sharded-ingress or --sharded-httpproxy or both")
+		setupLog.Info(
+			"invalid configuration: at least one controller must be specified," +
+				" use --sharded-ingress or --sharded-httpproxy or both",
+		)
 		os.Exit(1)
 	}
 
@@ -101,7 +104,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	baseSettings := controller.Settings{
+	if runShardedIngress {
+		setupShardedIngressController(mgr, conf)
+	}
+	if runShardedHTTPProxy {
+		setupShardedHTTPProxyController(mgr, conf)
+	}
+	//+kubebuilder:scaffold:builder
+
+	if healthzErr := mgr.AddHealthzCheck("healthz", healthz.Ping); healthzErr != nil {
+		setupLog.Error(healthzErr, "unable to set up health check")
+		os.Exit(1)
+	}
+	if readyzErr := mgr.AddReadyzCheck("readyz", healthz.Ping); readyzErr != nil {
+		setupLog.Error(readyzErr, "unable to set up ready check")
+		os.Exit(1)
+	}
+
+	setupLog.Info("starting manager")
+	if startErr := mgr.Start(ctrl.SetupSignalHandler()); startErr != nil {
+		setupLog.Error(startErr, "problem running manager")
+		os.Exit(1)
+	}
+}
+
+// buildSettings maps the loaded config onto the controller settings shared by
+// both controllers; MaxShards is set per controller by the callers.
+func buildSettings(conf *config.AppConfig) controller.Settings {
+	return controller.Settings{
 		TerminationPeriod:                  conf.RateLimit.UpdateCooldown.Object,
 		ShardUpdateCooldown:                conf.RateLimit.UpdateCooldown.Shard,
 		DomainSubstring:                    conf.General.DomainSubstring,
@@ -118,52 +148,46 @@ func main() {
 		FinalizerTerminationPeriod:         conf.Finalizer.TerminationPeriod,
 		FinalizerDeletionTerminationPeriod: conf.Finalizer.DeletionTerminationPeriod,
 	}
+}
 
-	if runShardedIngress {
-		settings := baseSettings
-		settings.MaxShards = conf.ShardedIngress.Shards
-		shardedIngressReconciler := controller.NewShardedIngressReconciler(
-			mgr.GetClient(),
-			mgr.GetScheme(),
-			mgr.GetEventRecorderFor("shardedingress-controller"),
-			settings,
-		)
+func setupShardedIngressController(mgr ctrl.Manager, conf *config.AppConfig) {
+	settings := buildSettings(conf)
+	settings.MaxShards = conf.ShardedIngress.Shards
+	reconciler := controller.NewShardedIngressReconciler(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		mgr.GetEventRecorderFor("shardedingress-controller"),
+		settings,
+	)
 
-		if err := shardedIngressReconciler.SetupWithManager(mgr, 1, conf.RateLimit.APIRateLimit, conf.RateLimit.APIBurstLimit); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ShardedIngress")
-			os.Exit(1)
-		}
-	}
-
-	if runShardedHTTPProxy {
-		settings := baseSettings
-		settings.MaxShards = conf.ShardedHTTPProxy.Shards
-		shardedHTTPProxyReconciler := controller.NewShardedHTTPProxyReconciler(
-			mgr.GetClient(),
-			mgr.GetScheme(),
-			mgr.GetEventRecorderFor("shardedhttpproxy-controller"),
-			settings,
-		)
-
-		if err := shardedHTTPProxyReconciler.SetupWithManager(mgr, 1, conf.RateLimit.APIRateLimit, conf.RateLimit.APIBurstLimit); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "ShardedHTTPProxy")
-			os.Exit(1)
-		}
-	}
-	//+kubebuilder:scaffold:builder
-
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
+	if err := reconciler.SetupWithManager(
+		mgr,
+		1,
+		conf.RateLimit.APIRateLimit,
+		conf.RateLimit.APIBurstLimit,
+	); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ShardedIngress")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
-	}
+}
 
-	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+func setupShardedHTTPProxyController(mgr ctrl.Manager, conf *config.AppConfig) {
+	settings := buildSettings(conf)
+	settings.MaxShards = conf.ShardedHTTPProxy.Shards
+	reconciler := controller.NewShardedHTTPProxyReconciler(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		mgr.GetEventRecorderFor("shardedhttpproxy-controller"),
+		settings,
+	)
+
+	if err := reconciler.SetupWithManager(
+		mgr,
+		1,
+		conf.RateLimit.APIRateLimit,
+		conf.RateLimit.APIBurstLimit,
+	); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ShardedHTTPProxy")
 		os.Exit(1)
 	}
 }
