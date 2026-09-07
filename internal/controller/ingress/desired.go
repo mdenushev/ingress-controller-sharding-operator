@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	networkingv1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
 	"k8s.tochka.com/sharded-ingress-controller/internal/engine"
@@ -96,12 +95,10 @@ func (b *renderer) RenderChildren(
 
 func renderIngress(shardedIngress *controllerv1.ShardedIngress, name, ingressClass string) *networkingv1.Ingress {
 	return &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   shardedIngress.Namespace,
-			Annotations: shardedIngress.Spec.Template.Annotations,
-			Labels:      shardedIngress.Spec.Template.Labels,
-		},
+		Name:        name,
+		Namespace:   shardedIngress.Namespace,
+		Annotations: shardedIngress.Spec.Template.Annotations,
+		Labels:      shardedIngress.Spec.Template.Labels,
 		Spec: networkingv1.IngressSpec{
 			IngressClassName: &ingressClass,
 			DefaultBackend:   shardedIngress.Spec.Template.Spec.DefaultBackend,

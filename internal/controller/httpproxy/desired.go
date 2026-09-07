@@ -2,10 +2,10 @@ package httpproxy
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	contourv1 "github.com/projectcontour/contour/apis/projectcontour/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
 	"k8s.tochka.com/sharded-ingress-controller/internal/engine"
@@ -121,12 +121,10 @@ func (b *renderer) renderHTTPProxy(
 	virtualHost *contourv1.VirtualHost,
 ) *contourv1.HTTPProxy {
 	httpProxy := &contourv1.HTTPProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   shardedHTTPProxy.Namespace,
-			Annotations: shardedHTTPProxy.Spec.Template.Annotations,
-			Labels:      copyLabels(shardedHTTPProxy.Spec.Template.Labels),
-		},
+		Name:        name,
+		Namespace:   shardedHTTPProxy.Namespace,
+		Annotations: shardedHTTPProxy.Spec.Template.Annotations,
+		Labels:      copyLabels(shardedHTTPProxy.Spec.Template.Labels),
 		Spec: contourv1.HTTPProxySpec{
 			VirtualHost:      virtualHost,
 			Routes:           shardedHTTPProxy.Spec.Template.Spec.Routes,
@@ -150,8 +148,6 @@ func (b *renderer) renderHTTPProxy(
 
 func copyLabels(source map[string]string) map[string]string {
 	res := make(map[string]string, len(source))
-	for k, v := range source {
-		res[k] = v
-	}
+	maps.Copy(res, source)
 	return res
 }

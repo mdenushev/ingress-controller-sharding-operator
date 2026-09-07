@@ -77,7 +77,7 @@ func alignServerAlias(existing, desired *networkingv1.Ingress) {
 		desired.Annotations[serverAliasAnnotation] = oldServerAlias
 	case newServerAlias != "" && oldServerAlias != "":
 		allExist := true
-		for _, alias := range strings.Split(newServerAlias, ",") {
+		for alias := range strings.SplitSeq(newServerAlias, ",") {
 			if !strings.Contains(oldServerAlias, alias) {
 				allExist = false
 				break

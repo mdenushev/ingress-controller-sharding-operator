@@ -34,8 +34,8 @@ func TestReconcileLifecycleToReady(t *testing.T) {
 	g.Expect(networkingv1.AddToScheme(testScheme)).To(Succeed())
 
 	sharded := &controllerv1.ShardedHTTPProxy{
-		TypeMeta:   metav1.TypeMeta{Kind: "ShardedHTTPProxy", APIVersion: controllerv1.GroupVersion.String()},
-		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+		Kind: "ShardedHTTPProxy", APIVersion: controllerv1.GroupVersion.String(),
+		Name: "app", Namespace: "default",
 		Spec: controllerv1.ShardedHTTPProxySpec{
 			Template: controllerv1.HTTPProxyTemplateSpec{
 				Spec: contourv1.HTTPProxySpec{
@@ -45,7 +45,7 @@ func TestReconcileLifecycleToReady(t *testing.T) {
 			},
 		},
 	}
-	shardClass := &networkingv1.IngressClass{ObjectMeta: metav1.ObjectMeta{Name: "new-class-0"}}
+	shardClass := &networkingv1.IngressClass{Name: "new-class-0"}
 
 	settings := engine.Settings{
 		MaxShards:                  map[string]int{"new-class": 1},
@@ -68,7 +68,7 @@ func TestReconcileLifecycleToReady(t *testing.T) {
 	r := NewController(fakeClient, testScheme, recorder, settings)
 
 	ctx := context.Background()
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "app"}}
+	req := ctrl.Request{Namespace: "default", Name: "app"}
 
 	var phases []controllerv1.ShardedPhase
 	for i := range 6 {

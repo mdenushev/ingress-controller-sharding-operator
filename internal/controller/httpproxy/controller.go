@@ -5,7 +5,6 @@ package httpproxy
 
 import (
 	contourv1 "github.com/projectcontour/contour/apis/projectcontour/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -35,7 +34,7 @@ func NewController(
 			newRenderer(settings),
 			func() engine.ShardedObject {
 				return &controllerv1.ShardedHTTPProxy{
-					TypeMeta: metav1.TypeMeta{Kind: "ShardedHTTPProxy", APIVersion: controllerv1.GroupVersion.String()},
+					Kind: "ShardedHTTPProxy", APIVersion: controllerv1.GroupVersion.String(),
 				}
 			},
 			"shardedhttpproxy",

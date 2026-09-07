@@ -47,8 +47,8 @@ func (noopScheduler) Schedule(
 // child object under the old shard, i.e. mid class migration.
 func newMigratingShardedHTTPProxy() *controllerv1.ShardedHTTPProxy {
 	return &controllerv1.ShardedHTTPProxy{
-		TypeMeta:   metav1.TypeMeta{Kind: "ShardedHTTPProxy", APIVersion: controllerv1.GroupVersion.String()},
-		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+		Kind: "ShardedHTTPProxy", APIVersion: controllerv1.GroupVersion.String(),
+		Name: "app", Namespace: "default",
 		Spec: controllerv1.ShardedHTTPProxySpec{
 			Template: controllerv1.HTTPProxyTemplateSpec{
 				Spec: contourv1.HTTPProxySpec{
@@ -98,7 +98,7 @@ func newTestController(
 
 	// The shard's IngressClass must exist, otherwise start-up discovery
 	// lowers MaxShards to 0 and disables sharding for the class.
-	shardClass := &networkingv1.IngressClass{ObjectMeta: metav1.ObjectMeta{Name: testNewShardClass}}
+	shardClass := &networkingv1.IngressClass{Name: testNewShardClass}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
@@ -109,7 +109,7 @@ func newTestController(
 	r := NewController(fakeClient, testScheme, nil, settings)
 	r.Scheduler = noopScheduler{}
 
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: sharded.Namespace, Name: sharded.Name}}
+	req := ctrl.Request{Namespace: sharded.Namespace, Name: sharded.Name}
 	return r, req
 }
 
@@ -173,11 +173,9 @@ func TestReconcileMigrationKeepsOldClassWhileTmpAlive(t *testing.T) {
 	ctx := context.Background()
 
 	tmp := &contourv1.HTTPProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        "app-0-tmp",
-			Namespace:   "default",
-			Annotations: map[string]string{engine.OldShardAnnotation: testOldShardClass},
-		},
+		Name:        "app-0-tmp",
+		Namespace:   "default",
+		Annotations: map[string]string{engine.OldShardAnnotation: testOldShardClass},
 	}
 	r, req := newTestController(t, newMigratingShardedHTTPProxy(), tmp)
 
@@ -201,13 +199,11 @@ func TestReconcileMigrationSwitchesToNewClassAfterWindow(t *testing.T) {
 	ctx := context.Background()
 
 	tmp := &contourv1.HTTPProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "app-0-tmp",
-			Namespace: "default",
-			Annotations: map[string]string{
-				engine.OldShardAnnotation:        testOldShardClass,
-				engine.AutoDeleteAfterAnnotation: time.Now().Add(time.Minute).UTC().Format(time.RFC3339),
-			},
+		Name:      "app-0-tmp",
+		Namespace: "default",
+		Annotations: map[string]string{
+			engine.OldShardAnnotation:        testOldShardClass,
+			engine.AutoDeleteAfterAnnotation: time.Now().Add(time.Minute).UTC().Format(time.RFC3339),
 		},
 	}
 	r, req := newTestController(t, newMigratingShardedHTTPProxy(), tmp)
@@ -235,35 +231,30 @@ func TestReconcileMigrationDoesNotChurnAutoDeleteOnMain(t *testing.T) {
 	ctx := context.Background()
 
 	ownerRef := func() []metav1.OwnerReference {
-		yes := true
 		return []metav1.OwnerReference{{
 			APIVersion:         controllerv1.GroupVersion.String(),
 			Kind:               "ShardedHTTPProxy",
 			Name:               "app",
-			Controller:         &yes,
-			BlockOwnerDeletion: &yes,
+			Controller:         new(true),
+			BlockOwnerDeletion: new(true),
 		}}
 	}
 	childTypeMeta := metav1.TypeMeta{Kind: "HTTPProxy", APIVersion: contourv1.GroupVersion.String()}
 	tmp := &contourv1.HTTPProxy{
-		TypeMeta: childTypeMeta,
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "app-0-tmp",
-			Namespace:       "default",
-			Annotations:     map[string]string{engine.OldShardAnnotation: testOldShardClass},
-			OwnerReferences: ownerRef(),
-		},
-		Spec: contourv1.HTTPProxySpec{IngressClassName: testOldShardClass},
+		TypeMeta:        childTypeMeta,
+		Name:            "app-0-tmp",
+		Namespace:       "default",
+		Annotations:     map[string]string{engine.OldShardAnnotation: testOldShardClass},
+		OwnerReferences: ownerRef(),
+		Spec:            contourv1.HTTPProxySpec{IngressClassName: testOldShardClass},
 	}
 	main := &contourv1.HTTPProxy{
-		TypeMeta: childTypeMeta,
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            "app-0",
-			Namespace:       "default",
-			Labels:          map[string]string{testClassLabel: testOldShardClass, testRootLabel: "true"},
-			OwnerReferences: ownerRef(),
-		},
-		Spec: contourv1.HTTPProxySpec{IngressClassName: testOldShardClass},
+		TypeMeta:        childTypeMeta,
+		Name:            "app-0",
+		Namespace:       "default",
+		Labels:          map[string]string{testClassLabel: testOldShardClass, testRootLabel: "true"},
+		OwnerReferences: ownerRef(),
+		Spec:            contourv1.HTTPProxySpec{IngressClassName: testOldShardClass},
 	}
 	r, req := newTestController(t, newMigratingShardedHTTPProxy(), tmp, main)
 

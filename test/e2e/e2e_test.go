@@ -18,7 +18,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -62,29 +61,25 @@ func newE2EClient(t *testing.T) client.Client {
 func newParent(namespace string) *controllerv1.ShardedIngress {
 	className := oldClass
 	return &controllerv1.ShardedIngress{
-		ObjectMeta: metav1.ObjectMeta{Name: parentName, Namespace: namespace},
+		Name: parentName, Namespace: namespace,
 		Spec: controllerv1.ShardedIngressSpec{
 			Template: &controllerv1.IngressTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"app": parentName},
-				},
+				Labels: map[string]string{"app": parentName},
 				Spec: networkingv1.IngressSpec{
 					IngressClassName: &className,
 					Rules: []networkingv1.IngressRule{{
 						Host: "app.e2e.cluster.local",
-						IngressRuleValue: networkingv1.IngressRuleValue{
-							HTTP: &networkingv1.HTTPIngressRuleValue{
-								Paths: []networkingv1.HTTPIngressPath{{
-									Path:     "/",
-									PathType: ptr(networkingv1.PathTypePrefix),
-									Backend: networkingv1.IngressBackend{
-										Service: &networkingv1.IngressServiceBackend{
-											Name: parentName,
-											Port: networkingv1.ServiceBackendPort{Number: 80},
-										},
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{{
+								Path:     "/",
+								PathType: new(networkingv1.PathTypePrefix),
+								Backend: networkingv1.IngressBackend{
+									Service: &networkingv1.IngressServiceBackend{
+										Name: parentName,
+										Port: networkingv1.ServiceBackendPort{Number: 80},
 									},
-								}},
-							},
+								},
+							}},
 						},
 					}},
 				},
@@ -92,8 +87,6 @@ func newParent(namespace string) *controllerv1.ShardedIngress {
 		},
 	}
 }
-
-func ptr[T any](v T) *T { return &v }
 
 // phaseGetter polls the parent's status.phase; "" while unreadable.
 func phaseGetter(ctx context.Context, cl client.Client, key types.NamespacedName) func() controllerv1.ShardedPhase {
@@ -143,7 +136,7 @@ func TestShardedIngressLifecycle(t *testing.T) {
 	cl := newE2EClient(t)
 
 	namespace := fmt.Sprintf("sharding-e2e-%d", time.Now().Unix())
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+	ns := &corev1.Namespace{Name: namespace}
 	gt.Expect(cl.Create(ctx, ns)).To(Succeed())
 	t.Cleanup(func() { _ = cl.Delete(context.Background(), ns) })
 
@@ -196,7 +189,7 @@ func TestShardedIngressLifecycle(t *testing.T) {
 		g := NewWithT(t)
 		got := &controllerv1.ShardedIngress{}
 		g.Expect(cl.Get(ctx, parentKey, got)).To(Succeed())
-		got.Spec.Template.Spec.IngressClassName = ptr(newClass)
+		got.Spec.Template.Spec.IngressClassName = new(newClass)
 		g.Expect(cl.Update(ctx, got)).To(Succeed())
 
 		// Step 1: a tmp child pinned to the old shard appears.

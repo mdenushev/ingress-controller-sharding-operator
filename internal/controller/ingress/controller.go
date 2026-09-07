@@ -5,7 +5,6 @@ package ingress
 
 import (
 	networkingv1 "k8s.io/api/networking/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -34,7 +33,7 @@ func NewController(
 			newRenderer(settings),
 			func() engine.ShardedObject {
 				return &controllerv1.ShardedIngress{
-					TypeMeta: metav1.TypeMeta{Kind: "ShardedIngress", APIVersion: controllerv1.GroupVersion.String()},
+					Kind: "ShardedIngress", APIVersion: controllerv1.GroupVersion.String(),
 				}
 			},
 			"shardedingress",
