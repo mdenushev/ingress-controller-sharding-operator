@@ -101,7 +101,8 @@ func (b *renderer) renderFamily(
 // (and thus delete/recreate) the children.
 func (b *renderer) virtualHostChildName(baseName, host string, index int) string {
 	if b.settings.HashedVirtualHostNames {
-		return fmt.Sprintf("%s-%016x", baseName, xxhash.Sum64String(host))
+		//nolint:gosec // deliberate truncation to a short 8-char suffix
+		return fmt.Sprintf("%s-%08x", baseName, uint32(xxhash.Sum64String(host)))
 	}
 	return fmt.Sprintf("%s-%d", baseName, index)
 }

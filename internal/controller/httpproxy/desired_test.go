@@ -71,8 +71,8 @@ func TestVirtualHostChildNamesHashedAreOrderIndependent(t *testing.T) {
 	names := renderNames(g, b, "a.example.com,b.example.com")
 	g.Expect(names).To(HaveLen(3))
 	g.Expect(names[0]).To(Equal("app-0"))
-	g.Expect(names[1]).To(MatchRegexp(`^app-0-[0-9a-f]{16}$`))
-	g.Expect(names[2]).To(MatchRegexp(`^app-0-[0-9a-f]{16}$`))
+	g.Expect(names[1]).To(MatchRegexp(`^app-0-[0-9a-f]{8}$`))
+	g.Expect(names[2]).To(MatchRegexp(`^app-0-[0-9a-f]{8}$`))
 	g.Expect(names[1]).NotTo(Equal(names[2]))
 
 	// Reordering the annotation must produce the same name set.
