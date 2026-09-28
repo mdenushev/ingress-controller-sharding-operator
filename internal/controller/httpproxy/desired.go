@@ -5,6 +5,7 @@ import (
 	"maps"
 	"strings"
 
+	"github.com/cespare/xxhash"
 	contourv1 "github.com/projectcontour/contour/apis/projectcontour/v1"
 
 	controllerv1 "k8s.tochka.com/sharded-ingress-controller/api/v1"
@@ -88,10 +89,21 @@ func (b *renderer) renderFamily(
 		virtualHost := newVirtualHostFromTemplate(src.Spec.Template.Spec.VirtualHost, host)
 		children = append(children, engine.DesiredChild[*contourv1.HTTPProxy]{
 			Shard: shard,
-			Obj:   b.renderHTTPProxy(src, fmt.Sprintf("%s-%d", baseName, i), class, virtualHost),
+			Obj:   b.renderHTTPProxy(src, b.virtualHostChildName(baseName, host, i), class, virtualHost),
 		})
 	}
 	return children
+}
+
+// virtualHostChildName names the child of one extra virtual host: by the
+// annotation list index by default, or — with hashed names enabled — by a
+// stable hash of the host, so reordering the annotation does not rename
+// (and thus delete/recreate) the children.
+func (b *renderer) virtualHostChildName(baseName, host string, index int) string {
+	if b.settings.HashedVirtualHostNames {
+		return fmt.Sprintf("%s-%016x", baseName, xxhash.Sum64String(host))
+	}
+	return fmt.Sprintf("%s-%d", baseName, index)
 }
 
 // virtualHosts lists the extra hosts requested via the virtual-hosts

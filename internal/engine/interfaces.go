@@ -34,9 +34,13 @@ type Settings struct {
 	ServiceDiscoveryTagsAnnotation string
 	AppNameLabel                   string
 
-	// RootHTTPProxyLabel and VirtualHostsAnnotation are HTTPProxy-specific.
+	// RootHTTPProxyLabel, VirtualHostsAnnotation and HashedVirtualHostNames
+	// are HTTPProxy-specific.
 	RootHTTPProxyLabel     string
 	VirtualHostsAnnotation string
+	// HashedVirtualHostNames names virtual-host children by a hash of the
+	// host instead of the annotation list index.
+	HashedVirtualHostNames bool
 
 	AllShardsPlacementAnnotation string
 	AllShardsBaseHosts           []string

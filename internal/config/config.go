@@ -22,6 +22,11 @@ type AppConfig struct {
 		Annotations struct {
 			VirtualHosts string `mapstructure:"virtualHosts"`
 		} `mapstructure:"annotations"`
+		// HashedVirtualHostNames names the extra virtual-host children by a
+		// hash of the host instead of the list index, so reordering the
+		// annotation does not rename (and churn) the children. Off by
+		// default: flipping it renames every existing virtual-host child.
+		HashedVirtualHostNames bool `mapstructure:"hashedVirtualHostNames"`
 	} `mapstructure:"shardedHTTPProxy"`
 	RateLimit struct {
 		UpdateCooldown struct {

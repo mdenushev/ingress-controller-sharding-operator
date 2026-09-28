@@ -144,6 +144,7 @@ func buildSettings(conf *config.AppConfig) engine.Settings {
 		AppNameLabel:                       conf.AdditionalServiceDiscovery.Labels.AppName,
 		RootHTTPProxyLabel:                 conf.ShardedHTTPProxy.Labels.RootHTTPProxy,
 		VirtualHostsAnnotation:             conf.ShardedHTTPProxy.Annotations.VirtualHosts,
+		HashedVirtualHostNames:             conf.ShardedHTTPProxy.HashedVirtualHostNames,
 		AllShardsPlacementAnnotation:       conf.AllShardsPlacement.Annotations.Enabled,
 		AllShardsBaseHosts:                 conf.AllShardsPlacement.ShardBaseDomains,
 		FinalizerKey:                       conf.Finalizer.Key,
