@@ -40,6 +40,7 @@ jobs:
       - name: Install CRDs and deploy the operator
         run: |
           kubectl apply -f config/crd/bases
+          kubectl apply -f test/e2e/manifests/httpproxy-crd.yaml
           kubectl apply -f config/rbac/role.yaml
           kubectl apply -f test/e2e/manifests/operator.yaml
           kubectl -n sharding-e2e-system rollout status deploy/sharding-e2e-controller --timeout=180s

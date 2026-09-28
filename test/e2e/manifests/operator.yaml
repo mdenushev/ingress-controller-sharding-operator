@@ -36,6 +36,10 @@ data:
       shards:
         e2e-a: 1
         e2e-b: 1
+    shardedHTTPProxy:
+      shards:
+        e2e-a: 1
+        e2e-b: 1
     rateLimit:
       updateCooldown:
         object: 5s
@@ -75,6 +79,7 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - --sharded-ingress
+            - --sharded-httpproxy
             - --config=/etc/sharded/config.yaml
           volumeMounts:
             - name: config

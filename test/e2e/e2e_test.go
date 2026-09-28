@@ -15,6 +15,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	contourv1 "github.com/projectcontour/contour/apis/projectcontour/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -45,6 +46,9 @@ func newE2EClient(t *testing.T) client.Client {
 		t.Fatal(err)
 	}
 	if err := controllerv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := contourv1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := ctrlconfig.GetConfig()
@@ -113,8 +117,9 @@ func childClassGetter(ctx context.Context, cl client.Client) func(key types.Name
 	}
 }
 
-// eventReasonsGetter polls the reasons of the events recorded on the parent.
-func eventReasonsGetter(ctx context.Context, cl client.Client, namespace string) func() []string {
+// eventReasonsGetter polls the reasons of the events recorded on the named
+// parent.
+func eventReasonsGetter(ctx context.Context, cl client.Client, namespace, name string) func() []string {
 	return func() []string {
 		events := &corev1.EventList{}
 		if err := cl.List(ctx, events, client.InNamespace(namespace)); err != nil {
@@ -122,7 +127,7 @@ func eventReasonsGetter(ctx context.Context, cl client.Client, namespace string)
 		}
 		var reasons []string
 		for _, ev := range events.Items {
-			if ev.InvolvedObject.Name == parentName {
+			if ev.InvolvedObject.Name == name {
 				reasons = append(reasons, ev.Reason)
 			}
 		}
@@ -149,7 +154,7 @@ func TestShardedIngressLifecycle(t *testing.T) {
 
 	getPhase := phaseGetter(ctx, cl, parentKey)
 	getChildClass := childClassGetter(ctx, cl)
-	eventReasons := eventReasonsGetter(ctx, cl, namespace)
+	eventReasons := eventReasonsGetter(ctx, cl, namespace, parentName)
 
 	t.Run("child is created and parent becomes Ready", func(t *testing.T) {
 		g := NewWithT(t)
