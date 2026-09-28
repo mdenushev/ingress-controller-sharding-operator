@@ -107,10 +107,11 @@ func TestShardedHTTPProxyLifecycle(t *testing.T) {
 		g.Eventually(func() string { return getChildClass(childKey) }, 2*time.Minute, 2*time.Second).
 			Should(Equal(oldShardClass), "root proxy must appear on the old shard")
 
+		// The root proxy carries the routes and the root label; the template's
+		// virtual host is only rendered into the per-alias children.
 		root := &contourv1.HTTPProxy{}
 		g.Expect(cl.Get(ctx, childKey, root)).To(Succeed())
-		g.Expect(root.Spec.VirtualHost).NotTo(BeNil())
-		g.Expect(root.Spec.VirtualHost.Fqdn).To(Equal(proxyHost))
+		g.Expect(root.Spec.Routes).NotTo(BeEmpty())
 		g.Expect(root.Labels).To(HaveKeyWithValue("k8s.tochka.com/base-proxy", "true"),
 			"root proxy must carry the root label")
 		g.Expect(root.Labels).To(HaveKeyWithValue("k8s.tochka.com/ingress-class", oldShardClass))
@@ -139,20 +140,23 @@ func TestShardedHTTPProxyLifecycle(t *testing.T) {
 			Should(ContainElement("ChildCreated"), "parent must record a ChildCreated event")
 	})
 
-	t.Run("spec update propagates to the root child", func(t *testing.T) {
+	t.Run("spec update propagates to the children", func(t *testing.T) {
 		g := NewWithT(t)
 		got := &controllerv1.ShardedHTTPProxy{}
 		g.Expect(cl.Get(ctx, parentKey, got)).To(Succeed())
-		got.Spec.Template.Spec.VirtualHost.Fqdn = "proxy-v2.e2e.cluster.local"
+		// The template routes are rendered into every child, so a port change
+		// must reach the root proxy.
+		got.Spec.Template.Spec.Routes[0].Services[0].Port = 8080
 		g.Expect(cl.Update(ctx, got)).To(Succeed())
 
-		g.Eventually(func() string {
+		g.Eventually(func() int64 {
 			child := &contourv1.HTTPProxy{}
-			if err := cl.Get(ctx, childKey, child); err != nil || child.Spec.VirtualHost == nil {
-				return ""
+			if err := cl.Get(ctx, childKey, child); err != nil ||
+				len(child.Spec.Routes) == 0 || len(child.Spec.Routes[0].Services) == 0 {
+				return 0
 			}
-			return child.Spec.VirtualHost.Fqdn
-		}, 2*time.Minute, 2*time.Second).Should(Equal("proxy-v2.e2e.cluster.local"))
+			return int64(child.Spec.Routes[0].Services[0].Port)
+		}, 2*time.Minute, 2*time.Second).Should(Equal(int64(8080)))
 		g.Eventually(getPhase, 2*time.Minute, 2*time.Second).
 			Should(Equal(controllerv1.PhaseReady))
 	})
